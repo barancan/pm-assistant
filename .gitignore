@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.db
+.DS_Store
+node_modules/
+
+# Workspace generated content (accumulates at runtime)
+workspace/01_intake/trusted/*.md
+workspace/01_intake/quarantine/*
+!workspace/01_intake/trusted/.gitkeep
+!workspace/01_intake/quarantine/.gitkeep
+workspace/**/output/*
+!workspace/**/output/.gitkeep

@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PM Assistant</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      --bg-base: #121212;
+      --bg-sidebar: #000000;
+      --bg-card: #181818;
+      --bg-card-hover: #282828;
+      --accent: #1DB954;
+      --accent-dim: #158a3e;
+      --text-primary: #FFFFFF;
+      --text-secondary: #B3B3B3;
+      --text-dim: #535353;
+      --status-running: #1DB954;
+      --status-review: #F59B23;
+      --status-error: #E91429;
+      --status-done: #1DB954;
+      --status-idle: #535353;
+      --border: #282828;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #root { height: 100vh; display: flex; flex-direction: column; }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 3px; }
+
+    /* Shimmer animation */
+    @keyframes shimmer {
+      0% { background-position: -468px 0; }
+      100% { background-position: 468px 0; }
+    }
+    .shimmer {
+      background: linear-gradient(to right, var(--bg-card) 8%, var(--bg-card-hover) 18%, var(--bg-card) 33%);
+      background-size: 800px 104px;
+      animation: shimmer 1.5s infinite linear;
+      border-radius: 8px;
+      height: 120px;
+    }
+
+    /* Pulse animation for running dot */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .pulse { animation: pulse 1.5s infinite; }
+
+    /* Blink cursor */
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .cursor::after {
+      content: '▋';
+      animation: blink 1s infinite;
+      color: var(--accent);
+    }
+
+    /* Chat expand */
+    @keyframes slideUp {
+      from { transform: translateY(10px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .slide-up { animation: slideUp 0.2s ease; }
+
+    /* Toast */
+    @keyframes fadeInOut {
+      0% { opacity: 0; transform: translateY(10px); }
+      15% { opacity: 1; transform: translateY(0); }
+      85% { opacity: 1; transform: translateY(0); }
+      100% { opacity: 0; transform: translateY(10px); }
+    }
+    .toast { animation: fadeInOut 3s forwards; }
+    .toast-error { animation: fadeInOut 5s forwards; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function formatTime(isoString) {
+  if (!isoString) return '—';
+  const d = new Date(isoString);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDate(isoString) {
+  if (!isoString) return '—';
+  const d = new Date(isoString);
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function elapsed(startedAt) {
+  if (!startedAt) return '';
+  const secs = Math.floor((Date.now() - new Date(startedAt)) / 1000);
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+}
+
+function statusColor(status) {
+  const map = {
+    running: 'var(--status-running)',
+    needs_review: 'var(--status-review)',
+    error: 'var(--status-error)',
+    done: 'var(--status-done)',
+    idle: 'var(--status-idle)',
+  };
+  return map[status] || 'var(--text-dim)';
+}
+
+// Simple markdown renderer
+function renderMarkdown(text) {
+  if (!text) return '';
+  return text
+    .replace(/^## (.+)$/gm, '<h2 style="color:var(--text-primary);font-size:1rem;margin:16px 0 8px;font-weight:600;">$1</h2>')
+    .replace(/^### (.+)$/gm, '<h3 style="color:var(--text-secondary);font-size:0.9rem;margin:12px 0 6px;font-weight:600;">$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^- (.+)$/gm, '<li style="margin:4px 0 4px 16px;color:var(--text-secondary);">$1</li>')
+    .replace(/^(\d+\. .+)$/gm, '<li style="margin:4px 0 4px 16px;color:var(--text-secondary);">$1</li>')
+    .replace(/\n\n/g, '<br/><br/>')
+    .replace(/\n/g, '<br/>');
+}
+
+// ─── API Layer ────────────────────────────────────────────────────────────────
+
+const API = {
+  async get(path) {
+    const r = await fetch(path);
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  },
+  async post(path, body) {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  },
+};
+
+// ─── Toast Manager ────────────────────────────────────────────────────────────
+
+function ToastContainer({ toasts }) {
+  return (
+    <div style={{
+      position: 'fixed', bottom: 100, right: 20,
+      display: 'flex', flexDirection: 'column', gap: 8, zIndex: 9999
+    }}>
+      {toasts.map(t => (
+        <div key={t.id}
+          className={t.type === 'error' ? 'toast-error' : 'toast'}
+          style={{
+            background: t.type === 'error' ? 'var(--status-error)'
+              : t.type === 'success' ? 'var(--accent)' : 'var(--bg-card-hover)',
+            color: '#fff',
+            padding: '10px 16px',
+            borderRadius: 8,
+            fontSize: '0.85rem',
+            maxWidth: 320,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+          }}
+        >{t.message}</div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Top Bar ──────────────────────────────────────────────────────────────────
+
+function TopBar({ processes }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const running = processes.filter(p => p.status === 'running');
+  const today = new Date().toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+
+  return (
+    <div style={{
+      height: 60, background: 'var(--bg-sidebar)',
+      borderBottom: '1px solid var(--border)',
+      display: 'flex', alignItems: 'center',
+      padding: '0 24px', flexShrink: 0,
+    }}>
+      <span style={{ color: 'var(--accent)', fontWeight: 700, fontSize: '1.1rem', minWidth: 140 }}>
+        PM Assistant
+      </span>
+      <div style={{ flex: 1, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+        {running.map(p => (
+          <div key={p.id} style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'var(--bg-card)', borderRadius: 20,
+            padding: '4px 12px', fontSize: '0.8rem',
+          }}>
+            <span className="pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block' }} />
+            <span style={{ color: 'var(--text-secondary)' }}>{p.name}</span>
+            <span style={{ color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+              {elapsed(p.started_at)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', minWidth: 180, textAlign: 'right' }}>
+        {today}
+      </span>
+    </div>
+  );
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+
+const NAV_ITEMS = [
+  { id: 'report', label: 'Daily Report', icon: '◈' },
+  { id: 'icm', label: 'ICM Pipeline', icon: '◎' },
+  { id: 'agents', label: 'Agents', icon: '◉' },
+  { id: 'settings', label: 'Settings', icon: '◇' },
+];
+
+function Sidebar({ activeView, setView, ollamaStatus, claudeStatus, wsConnected }) {
+  return (
+    <div style={{
+      width: 240, background: 'var(--bg-sidebar)',
+      borderRight: '1px solid var(--border)',
+      display: 'flex', flexDirection: 'column',
+      padding: '16px 0', flexShrink: 0,
+    }}>
+      <nav style={{ flex: 1, padding: '0 12px' }}>
+        {NAV_ITEMS.map(item => {
+          const active = activeView === item.id;
+          return (
+            <button key={item.id}
+              onClick={() => setView(item.id)}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: active ? 'var(--accent)' : 'transparent',
+                color: active ? '#fff' : 'var(--text-secondary)',
+                fontSize: '0.9rem', fontWeight: active ? 600 : 400,
+                marginBottom: 2, transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--bg-card)'; }}
+              onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+            >
+              <span style={{ fontSize: '1rem' }}>{item.icon}</span>
+              {item.label}
+            </button>
+          );
+        })}
+      </nav>
+      <div style={{ padding: '12px 24px', borderTop: '1px solid var(--border)' }}>
+        {!wsConnected && (
+          <div style={{ color: 'var(--status-review)', fontSize: '0.75rem', marginBottom: 8 }}>
+            ⚠ reconnecting...
+          </div>
+        )}
+        <StatusDot label="Ollama" status={ollamaStatus === 'connected'} />
+        <StatusDot label="Claude" status={claudeStatus === 'configured'} />
+      </div>
+    </div>
+  );
+}
+
+function StatusDot({ label, status }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+      <span style={{
+        width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
+        background: status ? 'var(--accent)' : 'var(--status-error)',
+      }} />
+      <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>{label}</span>
+    </div>
+  );
+}
+
+// ─── Daily Report View ────────────────────────────────────────────────────────
+
+function ReportView({ report, loading, onRunReport }) {
+  if (loading) {
+    return (
+      <div style={{ padding: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Daily Brief</h1>
+        </div>
+        <div className="shimmer" style={{ marginBottom: 16 }} />
+        <div className="shimmer" style={{ marginBottom: 16 }} />
+        <div className="shimmer" />
+      </div>
+    );
+  }
+
+  if (!report) {
+    return (
+      <div style={{ padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+        <div style={{ fontSize: '3rem', marginBottom: 16 }}>◈</div>
+        <h2 style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>No report yet</h2>
+        <p style={{ color: 'var(--text-dim)', marginBottom: 24, textAlign: 'center', maxWidth: 360 }}>
+          Click 'Run Report' to fetch your Linear status and generate today's brief.
+        </p>
+        <button onClick={onRunReport} style={accentBtn}>Run Report</button>
+      </div>
+    );
+  }
+
+  const content = report.content || {};
+  const markdown = content.report_markdown || '';
+  const generatedAt = content.generated_at;
+
+  // Split the markdown into sections
+  const sections = [];
+  const sectionTitles = ['Today\'s Priorities', 'Blocked Items', 'Momentum', 'Recommended Actions'];
+  let remaining = markdown;
+
+  sectionTitles.forEach(title => {
+    const idx = remaining.indexOf(`## ${title}`);
+    if (idx !== -1) {
+      const end = remaining.indexOf('\n## ', idx + 1);
+      const sectionContent = end !== -1
+        ? remaining.slice(idx, end)
+        : remaining.slice(idx);
+      sections.push({ title, content: sectionContent });
+      if (end !== -1) remaining = remaining.slice(end);
+    }
+  });
+
+  if (sections.length === 0 && markdown) {
+    sections.push({ title: 'Report', content: markdown });
+  }
+
+  return (
+    <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Daily Brief</h1>
+        <button onClick={onRunReport} style={accentBtn}>Run Report</button>
+      </div>
+      {generatedAt && (
+        <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginBottom: 24 }}>
+          Last updated: {formatDate(generatedAt)} {formatTime(generatedAt)}
+        </p>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {sections.map((s, i) => (
+          <div key={i} style={{
+            background: 'var(--bg-card)', borderRadius: 12,
+            padding: 20, border: '1px solid var(--border)',
+          }}>
+            <div
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(s.content) }}
+              style={{ lineHeight: 1.6, fontSize: '0.9rem' }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── ICM Pipeline View ────────────────────────────────────────────────────────
+
+function ICMView({ stages, tokenStreams, onRunStage, onMarkDone }) {
+  const [expanded, setExpanded] = useState(null);
+  const [inputFiles, setInputFiles] = useState({});
+  const [outputContent, setOutputContent] = useState({});
+  const [previewFile, setPreviewFile] = useState(null);
+
+  const toggleExpand = (stageNum) => {
+    setExpanded(prev => prev === stageNum ? null : stageNum);
+  };
+
+  return (
+    <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>ICM Pipeline</h1>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {stages.map(stage => (
+          <StageCard
+            key={stage.stage_number}
+            stage={stage}
+            expanded={expanded === stage.stage_number}
+            onToggle={() => toggleExpand(stage.stage_number)}
+            tokenStream={tokenStreams[stage.stage_name] || ''}
+            onRunStage={onRunStage}
+            onMarkDone={onMarkDone}
+          />
+        ))}
+      </div>
+
+      {previewFile && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+        }} onClick={() => setPreviewFile(null)}>
+          <div style={{
+            background: 'var(--bg-card)', borderRadius: 12, padding: 24,
+            maxWidth: 700, maxHeight: '80vh', overflowY: 'auto', width: '90%',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h3>{previewFile.name}</h3>
+              <button onClick={() => setPreviewFile(null)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}>✕</button>
+            </div>
+            <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              {previewFile.content}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone }) {
+  const tokenRef = useRef(null);
+  useEffect(() => {
+    if (tokenRef.current && tokenStream) {
+      tokenRef.current.scrollTop = tokenRef.current.scrollHeight;
+    }
+  }, [tokenStream]);
+
+  const canRun = ['idle', 'done', 'error', 'needs_review'].includes(stage.status);
+  const isRunning = stage.status === 'running';
+  const needsReview = stage.status === 'needs_review';
+  const isIntake = stage.stage_number === 1;
+
+  return (
+    <div style={{
+      background: 'var(--bg-card)', borderRadius: 12,
+      border: `1px solid ${isRunning ? 'var(--accent)' : needsReview ? 'var(--status-review)' : 'var(--border)'}`,
+      overflow: 'hidden', transition: 'border-color 0.2s',
+    }}>
+      {/* Card header */}
+      <div
+        onClick={onToggle}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 16,
+          padding: '16px 20px', cursor: 'pointer',
+        }}
+      >
+        <div style={{
+          width: 32, height: 32, borderRadius: '50%',
+          background: 'var(--accent)', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', fontWeight: 700, fontSize: '0.85rem', flexShrink: 0,
+        }}>
+          {stage.stage_number}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, textTransform: 'capitalize', marginBottom: 2 }}>
+            {stage.stage_name}
+          </div>
+          {stage.last_run_at && (
+            <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
+              Last run: {formatDate(stage.last_run_at)} {formatTime(stage.last_run_at)}
+            </div>
+          )}
+        </div>
+        <div style={{
+          padding: '3px 10px', borderRadius: 20, fontSize: '0.75rem', fontWeight: 600,
+          background: `${statusColor(stage.status)}22`,
+          color: statusColor(stage.status),
+          textTransform: 'uppercase', letterSpacing: '0.5px',
+        }}>
+          {stage.status.replace('_', ' ')}
+        </div>
+        {!isIntake && canRun && (
+          <button
+            onClick={e => { e.stopPropagation(); onRunStage(stage.stage_number); }}
+            style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem' }}
+          >
+            Run Stage
+          </button>
+        )}
+        <span style={{ color: 'var(--text-dim)', fontSize: '0.9rem' }}>
+          {expanded ? '▲' : '▼'}
+        </span>
+      </div>
+
+      {/* Review banner */}
+      {needsReview && (
+        <div style={{
+          background: '#F59B2322', borderTop: '1px solid #F59B2344',
+          padding: '10px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <span style={{ color: 'var(--status-review)', fontSize: '0.85rem' }}>
+            ⚠ Output ready for review. Review before advancing.
+          </span>
+          <button
+            onClick={() => onMarkDone(stage.stage_number)}
+            style={{ ...accentBtn, background: 'var(--status-review)', padding: '6px 14px', fontSize: '0.8rem' }}
+          >
+            Mark as Done
+          </button>
+        </div>
+      )}
+
+      {/* Token stream when running */}
+      {isRunning && tokenStream && (
+        <div
+          ref={tokenRef}
+          style={{
+            borderTop: '1px solid var(--border)',
+            padding: 16, maxHeight: 200, overflowY: 'auto',
+            fontFamily: 'monospace', fontSize: '0.8rem',
+            color: 'var(--text-secondary)', lineHeight: 1.6,
+            background: '#0a0a0a',
+          }}
+        >
+          <span>{tokenStream}</span>
+          <span className="cursor" />
+        </div>
+      )}
+
+      {/* Expanded content */}
+      {expanded && (
+        <div style={{
+          borderTop: '1px solid var(--border)',
+          padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
+        }}>
+          <div>
+            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Input Files
+            </h4>
+            <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+              {isIntake
+                ? 'Place files in 01_intake/trusted/ or 01_intake/quarantine/'
+                : `Place .md files in workspace/0${stage.stage_number}_${stage.stage_name}/input/`}
+            </p>
+          </div>
+          <div>
+            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Output
+            </h4>
+            {stage.output_path ? (
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontFamily: 'monospace' }}>
+                {stage.output_path.split('/').slice(-1)[0]}
+              </p>
+            ) : (
+              <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No output yet</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Agents View ──────────────────────────────────────────────────────────────
+
+function AgentsView({ processes, onRunReport }) {
+  const agents = [
+    {
+      id: 'linear_report',
+      name: 'Linear Report Agent',
+      description: 'Fetches Linear project data and synthesizes a daily brief using Claude.',
+      lastRun: processes.filter(p => p.type === 'linear_report').sort((a, b) =>
+        (b.started_at || '').localeCompare(a.started_at || ''))[0],
+      onRun: onRunReport,
+    },
+    {
+      id: 'icm_discovery',
+      name: 'ICM Discovery Agent',
+      description: 'Transforms raw user research into structured pain points (Stage 2, Ollama).',
+      lastRun: processes.filter(p => p.type === 'icm_stage_2').sort((a, b) =>
+        (b.started_at || '').localeCompare(a.started_at || ''))[0],
+    },
+    {
+      id: 'icm_opportunity',
+      name: 'ICM Opportunity Agent',
+      description: 'Frames pain points as opportunity statements (Stage 3, Ollama).',
+      lastRun: processes.filter(p => p.type === 'icm_stage_3').sort((a, b) =>
+        (b.started_at || '').localeCompare(a.started_at || ''))[0],
+    },
+    {
+      id: 'icm_prd',
+      name: 'ICM PRD Agent',
+      description: 'Produces a Product Requirements Document from opportunity statements (Stage 4, Claude).',
+      lastRun: processes.filter(p => p.type === 'icm_stage_4').sort((a, b) =>
+        (b.started_at || '').localeCompare(a.started_at || ''))[0],
+    },
+    {
+      id: 'icm_critique',
+      name: 'ICM Critique Agent',
+      description: 'Red-teams the PRD adversarially before it goes to engineering (Stage 5, Claude).',
+      lastRun: processes.filter(p => p.type === 'icm_stage_5').sort((a, b) =>
+        (b.started_at || '').localeCompare(a.started_at || ''))[0],
+    },
+    {
+      id: 'icm_stories',
+      name: 'ICM Stories Agent',
+      description: 'Converts the PRD into sprint-ready user stories with acceptance criteria (Stage 6, Ollama).',
+      lastRun: processes.filter(p => p.type === 'icm_stage_6').sort((a, b) =>
+        (b.started_at || '').localeCompare(a.started_at || ''))[0],
+    },
+  ];
+
+  return (
+    <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>Agents</h1>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {agents.map(agent => (
+          <div key={agent.id} style={{
+            background: 'var(--bg-card)', borderRadius: 12,
+            padding: '16px 20px', border: '1px solid var(--border)',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>{agent.name}</div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 4 }}>
+                {agent.description}
+              </div>
+              {agent.lastRun && (
+                <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
+                  Last run: {formatDate(agent.lastRun.started_at)} — {' '}
+                  <span style={{ color: statusColor(agent.lastRun.status) }}>
+                    {agent.lastRun.status}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {agent.lastRun && (
+                <span style={{
+                  padding: '3px 10px', borderRadius: 20, fontSize: '0.75rem',
+                  background: `${statusColor(agent.lastRun.status)}22`,
+                  color: statusColor(agent.lastRun.status),
+                }}>
+                  {agent.lastRun.status}
+                </span>
+              )}
+              {agent.onRun && (
+                <button onClick={agent.onRun} style={accentBtn}>Run</button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Settings View ────────────────────────────────────────────────────────────
+
+function SettingsView({ ollamaStatus, claudeStatus }) {
+  return (
+    <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>Settings</h1>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 600 }}>
+        <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
+          <h3 style={{ marginBottom: 12 }}>Model Connections</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>Ollama (Local)</div>
+                <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>gemma4:e4b — used for discovery, opportunity, stories</div>
+              </div>
+              <span style={{
+                padding: '4px 12px', borderRadius: 20, fontSize: '0.8rem',
+                background: ollamaStatus === 'connected' ? '#1DB95422' : '#E9142922',
+                color: ollamaStatus === 'connected' ? 'var(--accent)' : 'var(--status-error)',
+              }}>
+                {ollamaStatus === 'connected' ? 'Connected' : 'Disconnected'}
+              </span>
+            </div>
+            <div style={{ height: 1, background: 'var(--border)' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>Claude API</div>
+                <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>claude-sonnet-4-6 — used for PRD, critique, orchestration</div>
+              </div>
+              <span style={{
+                padding: '4px 12px', borderRadius: 20, fontSize: '0.8rem',
+                background: claudeStatus === 'configured' ? '#1DB95422' : '#53535322',
+                color: claudeStatus === 'configured' ? 'var(--accent)' : 'var(--text-dim)',
+              }}>
+                {claudeStatus === 'configured' ? 'Configured' : 'Not configured'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
+          <h3 style={{ marginBottom: 12 }}>Configuration</h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.6 }}>
+            Edit <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4, fontFamily: 'monospace' }}>.env</code> in the project root to configure API keys and settings.
+          </p>
+          <div style={{ marginTop: 12, fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-dim)', lineHeight: 2 }}>
+            <div>ANTHROPIC_API_KEY=...</div>
+            <div>OLLAMA_HOST=http://localhost:11434</div>
+            <div>OLLAMA_MODEL=gemma4:e4b</div>
+            <div>LINEAR_MCP_URL=https://mcp.linear.app/mcp</div>
+            <div>LINEAR_API_KEY=... (optional)</div>
+          </div>
+        </div>
+
+        <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
+          <h3 style={{ marginBottom: 12 }}>ICM Pipeline</h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.6 }}>
+            To run a stage, add <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4 }}>.md</code> files to the stage's <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4 }}>input/</code> folder, then click Run Stage. Outputs accumulate in <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4 }}>output/</code> — they are never deleted.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Chat Bar ─────────────────────────────────────────────────────────────────
+
+function ChatBar({ chatHistory, onSend, loading }) {
+  const [message, setMessage] = useState('');
+  const [focused, setFocused] = useState(false);
+  const inputRef = useRef(null);
+  const historyRef = useRef(null);
+
+  useEffect(() => {
+    if (historyRef.current && focused) {
+      historyRef.current.scrollTop = historyRef.current.scrollHeight;
+    }
+  }, [chatHistory, focused]);
+
+  const send = () => {
+    const trimmed = message.trim();
+    if (!trimmed || loading) return;
+    onSend(trimmed);
+    setMessage('');
+  };
+
+  const visibleHistory = chatHistory.slice(-5);
+
+  return (
+    <div style={{
+      height: focused ? 'auto' : 80,
+      background: '#0a0a0a',
+      borderTop: '1px solid var(--border)',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      transition: 'height 0.2s ease',
+    }}>
+      {/* Chat history panel */}
+      {focused && visibleHistory.length > 0 && (
+        <div
+          ref={historyRef}
+          className="slide-up"
+          style={{
+            maxHeight: 240, overflowY: 'auto',
+            padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 8,
+          }}
+        >
+          {visibleHistory.map((msg, i) => (
+            <div key={i} style={{
+              display: 'flex',
+              justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+            }}>
+              <div style={{
+                maxWidth: '70%', padding: '8px 12px', borderRadius: 10,
+                background: msg.role === 'user' ? '#1DB95433' : 'var(--bg-card)',
+                color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.5,
+                border: '1px solid var(--border)',
+              }}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Input row */}
+      <div style={{
+        height: 80, display: 'flex', alignItems: 'center',
+        padding: '0 20px', gap: 12,
+      }}>
+        <input
+          ref={inputRef}
+          value={message}
+          onChange={e => setMessage(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 150)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="Ask the orchestrator anything, or give a command..."
+          style={{
+            flex: 1, background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 24, padding: '12px 18px', color: 'var(--text-primary)',
+            fontSize: '0.9rem', outline: 'none',
+            transition: 'border-color 0.15s',
+          }}
+          onFocusCapture={e => { e.target.style.borderColor = 'var(--accent)'; }}
+          onBlurCapture={e => { e.target.style.borderColor = 'var(--border)'; }}
+        />
+        <button
+          onClick={send}
+          disabled={loading || !message.trim()}
+          style={{
+            width: 44, height: 44, borderRadius: '50%', border: 'none',
+            background: loading || !message.trim() ? 'var(--text-dim)' : 'var(--accent)',
+            color: '#fff', cursor: loading || !message.trim() ? 'not-allowed' : 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '1.1rem', flexShrink: 0, transition: 'background 0.15s',
+          }}
+        >
+          {loading ? '○' : '→'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared Button Style ──────────────────────────────────────────────────────
+
+const accentBtn = {
+  background: 'var(--accent)',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 20,
+  padding: '8px 18px',
+  fontSize: '0.85rem',
+  fontWeight: 600,
+  cursor: 'pointer',
+  transition: 'background 0.15s',
+};
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+
+function App() {
+  const [activeView, setActiveView] = useState('report');
+  const [processes, setProcesses] = useState([]);
+  const [icmStages, setIcmStages] = useState([]);
+  const [ollamaStatus, setOllamaStatus] = useState('disconnected');
+  const [claudeStatus, setClaudeStatus] = useState('not_configured');
+  const [report, setReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [chatHistory, setChatHistory] = useState([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [tokenStreams, setTokenStreams] = useState({});
+  const [toasts, setToasts] = useState([]);
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef(null);
+  const reconnectDelay = useRef(1000);
+  const toastId = useRef(0);
+
+  const addToast = useCallback((message, type = 'info') => {
+    const id = ++toastId.current;
+    setToasts(prev => [...prev, { id, message, type }]);
+    const timeout = type === 'error' ? 5000 : 3000;
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), timeout);
+  }, []);
+
+  // Initial data load
+  useEffect(() => {
+    loadStatus();
+    loadReport();
+    loadChatHistory();
+  }, []);
+
+  // Poll every 30s as fallback
+  useEffect(() => {
+    const id = setInterval(loadStatus, 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function loadStatus() {
+    try {
+      const data = await API.get('/api/status');
+      setProcesses(data.processes || []);
+      setIcmStages(data.icm_stages || []);
+      setOllamaStatus(data.ollama_status);
+      setClaudeStatus(data.claude_status);
+    } catch {}
+  }
+
+  async function loadReport() {
+    try {
+      const data = await API.get('/api/reports/latest');
+      setReport(data.report);
+    } catch {}
+  }
+
+  async function loadChatHistory() {
+    try {
+      const data = await API.get('/api/chat/history');
+      setChatHistory(data.messages || []);
+    } catch {}
+  }
+
+  // WebSocket connection with exponential backoff
+  const connectWS = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState < 2) return;
+
+    const ws = new WebSocket(`ws://${window.location.host}/ws/updates`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsConnected(true);
+      reconnectDelay.current = 1000;
+    };
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        handleWSMessage(msg);
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      setWsConnected(false);
+      const delay = reconnectDelay.current;
+      reconnectDelay.current = Math.min(delay * 2, 30000);
+      setTimeout(connectWS, delay);
+    };
+
+    ws.onerror = () => ws.close();
+  }, []);
+
+  useEffect(() => {
+    connectWS();
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [connectWS]);
+
+  function handleWSMessage(msg) {
+    switch (msg.type) {
+      case 'status_snapshot':
+        if (msg.processes) setProcesses(msg.processes);
+        if (msg.icm_stages) setIcmStages(msg.icm_stages);
+        if (msg.ollama_status) setOllamaStatus(msg.ollama_status);
+        if (msg.claude_status) setClaudeStatus(msg.claude_status);
+        break;
+
+      case 'process_update':
+        setProcesses(prev => {
+          const idx = prev.findIndex(p => p.id === msg.process_id);
+          if (idx === -1) {
+            return [...prev, {
+              id: msg.process_id, name: msg.name || 'Process',
+              status: msg.status, type: 'unknown',
+              started_at: new Date().toISOString(),
+            }];
+          }
+          const updated = [...prev];
+          updated[idx] = { ...updated[idx], status: msg.status };
+          return updated;
+        });
+        // Refresh stages on process update
+        loadStatus();
+        break;
+
+      case 'token_stream':
+        if (msg.stage) {
+          setTokenStreams(prev => ({
+            ...prev,
+            [msg.stage]: (prev[msg.stage] || '') + (msg.token || ''),
+          }));
+        }
+        break;
+
+      case 'report_complete':
+        loadReport();
+        addToast('Daily report ready!', 'success');
+        break;
+
+      case 'error':
+        addToast(msg.message || 'An error occurred', 'error');
+        break;
+
+      case 'ping':
+        if (wsRef.current && wsRef.current.readyState === 1) {
+          wsRef.current.send('ping');
+        }
+        break;
+    }
+  }
+
+  async function runReport() {
+    setReportLoading(true);
+    try {
+      await API.post('/api/agents/linear-report/run', {});
+      addToast('Report generation started', 'info');
+      await loadStatus();
+    } catch (err) {
+      addToast(`Failed to start report: ${err.message}`, 'error');
+    } finally {
+      setReportLoading(false);
+    }
+  }
+
+  async function runStage(stageNumber) {
+    try {
+      await API.post(`/api/icm/run/${stageNumber}`, {});
+      addToast(`Stage ${stageNumber} started`, 'info');
+      setTokenStreams(prev => {
+        const stageName = ['','intake','discovery','opportunity','prd','critique','stories'][stageNumber];
+        return { ...prev, [stageName]: '' };
+      });
+      await loadStatus();
+    } catch (err) {
+      addToast(`Failed to start stage ${stageNumber}: ${err.message}`, 'error');
+    }
+  }
+
+  async function markStageDone(stageNumber) {
+    // Update ICM stage status to done via chat command
+    try {
+      await API.post('/api/chat', { message: `Mark stage ${stageNumber} as done` });
+      await loadStatus();
+      addToast('Stage marked as done', 'success');
+    } catch (err) {
+      addToast('Could not update stage status', 'error');
+    }
+  }
+
+  async function sendChat(message) {
+    setChatLoading(true);
+    setChatHistory(prev => [...prev, { role: 'user', content: message, id: Date.now() }]);
+    try {
+      const data = await API.post('/api/chat', { message });
+      setChatHistory(prev => [...prev, { role: 'assistant', content: data.response, id: Date.now() + 1 }]);
+      if (data.action_triggered) {
+        addToast(`Action triggered: ${data.action_triggered}`, 'info');
+        await loadStatus();
+      }
+    } catch (err) {
+      addToast(`Chat error: ${err.message}`, 'error');
+      setChatHistory(prev => prev.slice(0, -1));
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  const mainContent = () => {
+    switch (activeView) {
+      case 'report':
+        return <ReportView report={report} loading={reportLoading} onRunReport={runReport} />;
+      case 'icm':
+        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} />;
+      case 'agents':
+        return <AgentsView processes={processes} onRunReport={runReport} />;
+      case 'settings':
+        return <SettingsView ollamaStatus={ollamaStatus} claudeStatus={claudeStatus} />;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <>
+      <TopBar processes={processes} />
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        <Sidebar
+          activeView={activeView}
+          setView={setActiveView}
+          ollamaStatus={ollamaStatus}
+          claudeStatus={claudeStatus}
+          wsConnected={wsConnected}
+        />
+        <main style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            {mainContent()}
+          </div>
+        </main>
+      </div>
+      <ChatBar chatHistory={chatHistory} onSend={sendChat} loading={chatLoading} />
+      <ToastContainer toasts={toasts} />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
