@@ -345,14 +345,7 @@ async def promote_icm_files(stage_number: int, req: ICMPromoteRequest):
         if not str(dest).startswith(str(WORKSPACE_PATH)):
             raise HTTPException(status_code=403, detail="Destination path escapes workspace")
         dest_dir.mkdir(parents=True, exist_ok=True)
-        # Input dirs may be chmod 555 (locked per security setup).
-        # Promote is an explicit user action — temporarily unlock, copy, relock.
-        original_mode = dest_dir.stat().st_mode
-        os.chmod(dest_dir, 0o755)
-        try:
-            shutil.copy2(src, dest)
-        finally:
-            os.chmod(dest_dir, original_mode)
+        shutil.copy2(src, dest)
         promoted.append(safe_name)
 
     next_path = f"{_stage_path(next_stage)}/input"
@@ -383,33 +376,28 @@ async def upload_to_stage_input(stage_number: int, file: UploadFile = File(...))
 
     dest_dir = WORKSPACE_PATH / _stage_path(stage_number) / "input"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    # Input dirs may be chmod 555 — temporarily unlock for the write
-    original_mode = dest_dir.stat().st_mode
-    os.chmod(dest_dir, 0o755)
-    try:
-        if ext == ".txt":
-            final_name = Path(safe_name).stem + ".md"
-            dest = (dest_dir / final_name).resolve()
-            if not str(dest).startswith(str(WORKSPACE_PATH)):
-                raise HTTPException(status_code=403, detail="Path escapes workspace")
-            dest.write_text(content.decode("utf-8", errors="replace"), encoding="utf-8")
-            file_type = "markdown"
-        elif ext == ".md":
-            final_name = safe_name
-            dest = (dest_dir / final_name).resolve()
-            if not str(dest).startswith(str(WORKSPACE_PATH)):
-                raise HTTPException(status_code=403, detail="Path escapes workspace")
-            dest.write_text(content.decode("utf-8", errors="replace"), encoding="utf-8")
-            file_type = "markdown"
-        else:  # image
-            final_name = safe_name
-            dest = (dest_dir / final_name).resolve()
-            if not str(dest).startswith(str(WORKSPACE_PATH)):
-                raise HTTPException(status_code=403, detail="Path escapes workspace")
-            dest.write_bytes(content)
-            file_type = "image"
-    finally:
-        os.chmod(dest_dir, original_mode)
+
+    if ext == ".txt":
+        final_name = Path(safe_name).stem + ".md"
+        dest = (dest_dir / final_name).resolve()
+        if not str(dest).startswith(str(WORKSPACE_PATH)):
+            raise HTTPException(status_code=403, detail="Path escapes workspace")
+        dest.write_text(content.decode("utf-8", errors="replace"), encoding="utf-8")
+        file_type = "markdown"
+    elif ext == ".md":
+        final_name = safe_name
+        dest = (dest_dir / final_name).resolve()
+        if not str(dest).startswith(str(WORKSPACE_PATH)):
+            raise HTTPException(status_code=403, detail="Path escapes workspace")
+        dest.write_text(content.decode("utf-8", errors="replace"), encoding="utf-8")
+        file_type = "markdown"
+    else:  # image
+        final_name = safe_name
+        dest = (dest_dir / final_name).resolve()
+        if not str(dest).startswith(str(WORKSPACE_PATH)):
+            raise HTTPException(status_code=403, detail="Path escapes workspace")
+        dest.write_bytes(content)
+        file_type = "image"
 
     return {
         "saved_as": final_name,
