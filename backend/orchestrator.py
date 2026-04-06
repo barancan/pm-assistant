@@ -8,7 +8,7 @@ import database
 
 
 class Orchestrator:
-    SYSTEM_PROMPT = """You are the PM Assistant orchestrator for Baran, a senior product manager.
+    SYSTEM_PROMPT = """You are the PM Assistant orchestrator a senior product manager.
 You have awareness of all running processes, ICM pipeline state, and the latest daily report.
 
 You can help with:

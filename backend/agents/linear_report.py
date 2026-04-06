@@ -1,7 +1,5 @@
-import json
 import os
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 
@@ -18,34 +16,27 @@ class LinearReportAgent(BaseAgent):
     _process_name = "Linear Daily Report"
     _process_type = "linear_report"
 
-    async def _call_linear_mcp(
-        self, client: httpx.AsyncClient, tool_name: str, arguments: dict, call_id: int = 1
+    _GRAPHQL_URL = "https://api.linear.app/graphql"
+
+    async def _graphql(
+        self, client: httpx.AsyncClient, query: str, variables: dict | None = None
     ) -> dict:
-        linear_mcp_url = os.environ.get("LINEAR_MCP_URL", "https://mcp.linear.app/mcp")
         linear_api_key = os.environ.get("LINEAR_API_KEY", "")
-
-        headers = {"Content-Type": "application/json"}
-        if linear_api_key:
-            headers["Authorization"] = f"Bearer {linear_api_key}"
-
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments,
-            },
-            "id": call_id,
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": linear_api_key,  # Linear accepts the key without "Bearer"
         }
-
+        payload: dict = {"query": query}
+        if variables:
+            payload["variables"] = variables
         try:
             response = await client.post(
-                linear_mcp_url, json=payload, headers=headers, timeout=30.0
+                self._GRAPHQL_URL, json=payload, headers=headers, timeout=30.0
             )
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            return {"error": str(exc), "tool": tool_name}
+            return {"errors": [{"message": str(exc)}]}
 
     async def run(self, process_id: str) -> dict:
         # Step 1 — Update status to running
@@ -66,53 +57,52 @@ class LinearReportAgent(BaseAgent):
         )
 
         try:
-            # Step 2 — Fetch Linear data
+            # Step 2 — Fetch Linear data via GraphQL
+            from datetime import timedelta
+            yesterday = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
             linear_data: dict = {}
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Active projects
-                projects_resp = await self._call_linear_mcp(
-                    client, "list_projects", {}, call_id=1
-                )
-                linear_data["projects"] = self._extract_mcp_result(projects_resp)
+                projects_resp = await self._graphql(client, """
+                    query { projects(first: 20) { nodes {
+                        id name state { name } description
+                    } } }
+                """)
+                linear_data["projects"] = self._gql_nodes(projects_resp, "projects")
 
-                # Active issues (started/unstarted)
-                active_resp = await self._call_linear_mcp(
-                    client,
-                    "list_issues",
-                    {"filter": {"state": {"type": {"in": ["started", "unstarted"]}}}},
-                    call_id=2,
-                )
-                linear_data["active_issues"] = self._extract_mcp_result(active_resp)
+                # Active issues (started / unstarted)
+                active_resp = await self._graphql(client, """
+                    query($filter: IssueFilter) { issues(first: 30, filter: $filter) { nodes {
+                        id title priority state { name } assignee { name } updatedAt
+                    } } }
+                """, {"filter": {"state": {"type": {"in": ["started", "unstarted"]}}}})
+                linear_data["active_issues"] = self._gql_nodes(active_resp, "issues")
 
-                # High priority issues
-                priority_resp = await self._call_linear_mcp(
-                    client,
-                    "list_issues",
-                    {"filter": {"priority": 1}},
-                    call_id=3,
-                )
-                linear_data["priority_issues"] = self._extract_mcp_result(priority_resp)
+                # Urgent / high priority issues (priority 1 = urgent)
+                priority_resp = await self._graphql(client, """
+                    query($filter: IssueFilter) { issues(first: 20, filter: $filter) { nodes {
+                        id title priority state { name } assignee { name }
+                    } } }
+                """, {"filter": {"priority": {"lte": 2}}})
+                linear_data["priority_issues"] = self._gql_nodes(priority_resp, "issues")
 
                 # In-progress issues
-                in_progress_resp = await self._call_linear_mcp(
-                    client,
-                    "list_issues",
-                    {"filter": {"state": {"name": {"eq": "In Progress"}}}},
-                    call_id=4,
-                )
-                linear_data["in_progress"] = self._extract_mcp_result(in_progress_resp)
+                in_progress_resp = await self._graphql(client, """
+                    query($filter: IssueFilter) { issues(first: 20, filter: $filter) { nodes {
+                        id title assignee { name } state { name }
+                    } } }
+                """, {"filter": {"state": {"name": {"eq": "In Progress"}}}})
+                linear_data["in_progress"] = self._gql_nodes(in_progress_resp, "issues")
 
                 # Recent movement (last 24h)
-                from datetime import timedelta
-                yesterday = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-                recent_resp = await self._call_linear_mcp(
-                    client,
-                    "list_issues",
-                    {"filter": {"updatedAt": {"gt": yesterday}}},
-                    call_id=5,
-                )
-                linear_data["recent_movement"] = self._extract_mcp_result(recent_resp)
+                recent_resp = await self._graphql(client, """
+                    query($filter: IssueFilter) { issues(first: 20, filter: $filter) { nodes {
+                        id title updatedAt state { name }
+                    } } }
+                """, {"filter": {"updatedAt": {"gte": yesterday}}})
+                linear_data["recent_movement"] = self._gql_nodes(recent_resp, "issues")
 
             await self.broadcast(
                 "process_update",
@@ -208,24 +198,18 @@ LINEAR DATA:
             )
             raise
 
-    def _extract_mcp_result(self, response: dict) -> list:
-        if "error" in response and "result" not in response:
+    def _gql_nodes(self, response: dict, key: str) -> list:
+        """Extract nodes list from a GraphQL response, silently returning [] on error."""
+        if "errors" in response:
+            err = response["errors"][0].get("message", "unknown") if response["errors"] else "unknown"
+            print(f"[LinearReport] GraphQL error ({key}): {err}")
             return []
-        result = response.get("result", {})
-        if isinstance(result, dict):
-            content = result.get("content", [])
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        try:
-                            return json.loads(item["text"])
-                        except (json.JSONDecodeError, KeyError):
-                            return [{"raw": item.get("text", "")}]
-            data = result.get("data", result.get("nodes", result.get("issues", [])))
-            if isinstance(data, list):
-                return data
-        if isinstance(result, list):
-            return result
+        data = response.get("data", {})
+        collection = data.get(key, {})
+        if isinstance(collection, dict):
+            return collection.get("nodes", [])
+        if isinstance(collection, list):
+            return collection
         return []
 
     def _format_linear_data(self, data: dict) -> str:
@@ -236,8 +220,9 @@ LINEAR DATA:
             sections.append(f"ACTIVE PROJECTS ({len(projects)}):")
             for p in projects[:10]:
                 if isinstance(p, dict):
-                    name = p.get("name", p.get("title", "Unknown"))
-                    state = p.get("state", p.get("status", ""))
+                    name = p.get("name", "Unknown")
+                    state_raw = p.get("state", {})
+                    state = state_raw.get("name", "") if isinstance(state_raw, dict) else str(state_raw)
                     sections.append(f"  - {name} [{state}]")
         else:
             sections.append("ACTIVE PROJECTS: None fetched (Linear may require API key)")
