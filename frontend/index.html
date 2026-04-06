@@ -87,6 +87,20 @@
     }
     .toast { animation: fadeInOut 3s forwards; }
     .toast-error { animation: fadeInOut 5s forwards; }
+
+    /* Spinner for running processes */
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .spinner {
+      width: 10px; height: 10px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -716,93 +730,162 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
 
 // ─── Agents View ──────────────────────────────────────────────────────────────
 
-function AgentsView({ processes, onRunReport }) {
-  const agents = [
-    {
-      id: 'linear_report',
-      name: 'Linear Report Agent',
-      description: 'Fetches Linear project data and synthesizes a daily brief using Claude.',
-      lastRun: processes.filter(p => p.type === 'linear_report').sort((a, b) =>
-        (b.started_at || '').localeCompare(a.started_at || ''))[0],
-      onRun: onRunReport,
-    },
-    {
-      id: 'icm_discovery',
-      name: 'ICM Discovery Agent',
-      description: 'Transforms raw user research into structured pain points (Stage 2, Ollama).',
-      lastRun: processes.filter(p => p.type === 'icm_stage_2').sort((a, b) =>
-        (b.started_at || '').localeCompare(a.started_at || ''))[0],
-    },
-    {
-      id: 'icm_opportunity',
-      name: 'ICM Opportunity Agent',
-      description: 'Frames pain points as opportunity statements (Stage 3, Ollama).',
-      lastRun: processes.filter(p => p.type === 'icm_stage_3').sort((a, b) =>
-        (b.started_at || '').localeCompare(a.started_at || ''))[0],
-    },
-    {
-      id: 'icm_prd',
-      name: 'ICM PRD Agent',
-      description: 'Produces a Product Requirements Document from opportunity statements (Stage 4, Claude).',
-      lastRun: processes.filter(p => p.type === 'icm_stage_4').sort((a, b) =>
-        (b.started_at || '').localeCompare(a.started_at || ''))[0],
-    },
-    {
-      id: 'icm_critique',
-      name: 'ICM Critique Agent',
-      description: 'Red-teams the PRD adversarially before it goes to engineering (Stage 5, Claude).',
-      lastRun: processes.filter(p => p.type === 'icm_stage_5').sort((a, b) =>
-        (b.started_at || '').localeCompare(a.started_at || ''))[0],
-    },
-    {
-      id: 'icm_stories',
-      name: 'ICM Stories Agent',
-      description: 'Converts the PRD into sprint-ready user stories with acceptance criteria (Stage 6, Ollama).',
-      lastRun: processes.filter(p => p.type === 'icm_stage_6').sort((a, b) =>
-        (b.started_at || '').localeCompare(a.started_at || ''))[0],
-    },
-  ];
+const AGENT_DEFS = [
+  {
+    id: 'linear_report', processType: 'linear_report',
+    name: 'Linear Report Agent',
+    description: 'Fetches Linear project data and synthesizes a daily brief using Claude.',
+  },
+  {
+    id: 'icm_discovery', processType: 'icm_stage_2',
+    name: 'ICM Discovery Agent',
+    description: 'Transforms raw user research into structured pain points (Stage 2, Ollama).',
+  },
+  {
+    id: 'icm_opportunity', processType: 'icm_stage_3',
+    name: 'ICM Opportunity Agent',
+    description: 'Frames pain points as opportunity statements (Stage 3, Ollama).',
+  },
+  {
+    id: 'icm_prd', processType: 'icm_stage_4',
+    name: 'ICM PRD Agent',
+    description: 'Produces a Product Requirements Document from opportunity statements (Stage 4, Claude).',
+  },
+  {
+    id: 'icm_critique', processType: 'icm_stage_5',
+    name: 'ICM Critique Agent',
+    description: 'Red-teams the PRD adversarially before it goes to engineering (Stage 5, Claude).',
+  },
+  {
+    id: 'icm_stories', processType: 'icm_stage_6',
+    name: 'ICM Stories Agent',
+    description: 'Converts the PRD into sprint-ready user stories with acceptance criteria (Stage 6, Ollama).',
+  },
+];
+
+function AgentsView({ processes, onRunReport, focusedAgentId }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const cardRefs = useRef({});
+
+  // Auto-expand and scroll when a process panel click navigates here
+  useEffect(() => {
+    if (!focusedAgentId) return;
+    setExpandedId(focusedAgentId);
+    const el = cardRefs.current[focusedAgentId];
+    if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+  }, [focusedAgentId]);
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
       <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>Agents</h1>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {agents.map(agent => (
-          <div key={agent.id} style={{
-            background: 'var(--bg-card)', borderRadius: 12,
-            padding: '16px 20px', border: '1px solid var(--border)',
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          }}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>{agent.name}</div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 4 }}>
-                {agent.description}
-              </div>
-              {agent.lastRun && (
-                <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
-                  Last run: {formatDate(agent.lastRun.started_at)} — {' '}
-                  <span style={{ color: statusColor(agent.lastRun.status) }}>
-                    {agent.lastRun.status}
+        {AGENT_DEFS.map(agent => {
+          const agentRuns = processes
+            .filter(p => p.type === agent.processType)
+            .sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
+          const lastRun = agentRuns[0];
+          const isExpanded = expandedId === agent.id;
+          const isFocused = focusedAgentId === agent.id;
+
+          return (
+            <div
+              key={agent.id}
+              ref={el => { cardRefs.current[agent.id] = el; }}
+              style={{
+                background: 'var(--bg-card)', borderRadius: 12,
+                border: `1px solid ${isFocused ? 'var(--accent)' : 'var(--border)'}`,
+                overflow: 'hidden', transition: 'border-color 0.2s',
+              }}
+            >
+              {/* Header row */}
+              <div
+                onClick={() => setExpandedId(isExpanded ? null : agent.id)}
+                style={{
+                  padding: '16px 20px', cursor: 'pointer',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{agent.name}</div>
+                  <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 4 }}>
+                    {agent.description}
+                  </div>
+                  {lastRun && (
+                    <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
+                      Last run: {formatDate(lastRun.started_at)} {formatTime(lastRun.started_at)} —{' '}
+                      <span style={{ color: statusColor(lastRun.status) }}>{lastRun.status}</span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                  {lastRun && (
+                    <span style={{
+                      padding: '3px 10px', borderRadius: 20, fontSize: '0.75rem',
+                      background: `${statusColor(lastRun.status)}22`,
+                      color: statusColor(lastRun.status),
+                    }}>
+                      {lastRun.status === 'running' && <span className="spinner" style={{ marginRight: 5, verticalAlign: 'middle' }} />}
+                      {lastRun.status.replace('_', ' ')}
+                    </span>
+                  )}
+                  {agent.id === 'linear_report' && (
+                    <button onClick={e => { e.stopPropagation(); onRunReport(); }} style={accentBtn}>Run</button>
+                  )}
+                  <span style={{ color: 'var(--text-dim)', fontSize: '0.9rem' }}>
+                    {isExpanded ? '▲' : '▼'}
                   </span>
+                </div>
+              </div>
+
+              {/* Expanded: recent runs */}
+              {isExpanded && (
+                <div style={{ borderTop: '1px solid var(--border)', padding: '16px 20px' }}>
+                  <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 12,
+                    textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Recent Runs
+                  </h4>
+                  {agentRuns.length === 0 ? (
+                    <p style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>No runs yet.</p>
+                  ) : agentRuns.slice(0, 5).map(run => (
+                    <div key={run.id} style={{
+                      padding: '10px 14px', borderRadius: 8, marginBottom: 8,
+                      background: 'var(--bg-base)', border: '1px solid var(--border)',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          {formatDate(run.started_at)} {formatTime(run.started_at)}
+                        </span>
+                        <span style={{
+                          fontSize: '0.75rem', padding: '2px 8px', borderRadius: 12,
+                          background: `${statusColor(run.status)}22`, color: statusColor(run.status),
+                        }}>
+                          {run.status === 'running' && <span className="spinner" style={{ marginRight: 4, verticalAlign: 'middle' }} />}
+                          {run.status.replace('_', ' ')}
+                        </span>
+                      </div>
+                      {run.status === 'running' && run.started_at && (
+                        <div style={{ color: 'var(--accent)', fontSize: '0.75rem' }}>
+                          Running… {elapsed(run.started_at)}
+                        </div>
+                      )}
+                      {run.output_summary && (
+                        <div style={{ color: 'var(--text-dim)', fontSize: '0.78rem', marginTop: 4,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                          {run.output_summary}
+                        </div>
+                      )}
+                      {run.error_message && (
+                        <div style={{ color: 'var(--status-error)', fontSize: '0.78rem', marginTop: 4 }}>
+                          ✕ {run.error_message}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              {agent.lastRun && (
-                <span style={{
-                  padding: '3px 10px', borderRadius: 20, fontSize: '0.75rem',
-                  background: `${statusColor(agent.lastRun.status)}22`,
-                  color: statusColor(agent.lastRun.status),
-                }}>
-                  {agent.lastRun.status}
-                </span>
-              )}
-              {agent.onRun && (
-                <button onClick={agent.onRun} style={accentBtn}>Run</button>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -988,6 +1071,154 @@ function ChatBar({ chatHistory, onSend, loading }) {
   );
 }
 
+// ─── Process Panel ────────────────────────────────────────────────────────────
+
+function processTypeToAgentId(type) {
+  const map = {
+    linear_report: 'linear_report',
+    icm_stage_2: 'icm_discovery',
+    icm_stage_3: 'icm_opportunity',
+    icm_stage_4: 'icm_prd',
+    icm_stage_5: 'icm_critique',
+    icm_stage_6: 'icm_stories',
+  };
+  return map[type] || null;
+}
+
+function ProcessPanel({ processes, onNavigate }) {
+  const [open, setOpen] = useState(true);
+  const [tick, setTick] = useState(0);
+
+  // Re-render every second so elapsed timers update
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Newest first, capped at 20
+  const sorted = [...processes]
+    .sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''))
+    .slice(0, 20);
+
+  return (
+    <div style={{
+      width: open ? 260 : 36,
+      flexShrink: 0,
+      borderLeft: '1px solid var(--border)',
+      background: 'var(--bg-sidebar)',
+      display: 'flex',
+      flexDirection: 'column',
+      transition: 'width 0.2s ease',
+      overflow: 'hidden',
+      position: 'relative',
+    }}>
+      {/* Toggle button */}
+      <button
+        onClick={() => setOpen(o => !o)}
+        title={open ? 'Collapse process panel' : 'Expand process panel'}
+        style={{
+          position: 'absolute', top: 12, right: 8, zIndex: 10,
+          background: 'none', border: 'none', color: 'var(--text-dim)',
+          cursor: 'pointer', fontSize: '0.85rem', padding: 4,
+          flexShrink: 0,
+        }}
+      >
+        {open ? '›' : '‹'}
+      </button>
+
+      {open && (
+        <>
+          <div style={{
+            padding: '13px 16px 11px',
+            borderBottom: '1px solid var(--border)',
+            fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.5px',
+            textTransform: 'uppercase', color: 'var(--text-secondary)',
+            whiteSpace: 'nowrap',
+          }}>
+            Processes
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {sorted.length === 0 && (
+              <div style={{ padding: '20px 16px', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                No processes yet.
+              </div>
+            )}
+            {sorted.map(p => {
+              const isRunning = p.status === 'running';
+              const agentId = processTypeToAgentId(p.type);
+              const clickable = !!agentId;
+
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => clickable && onNavigate(agentId)}
+                  style={{
+                    padding: '10px 14px',
+                    borderBottom: '1px solid var(--border)',
+                    cursor: clickable ? 'pointer' : 'default',
+                    transition: 'background 0.1s',
+                    display: 'flex', flexDirection: 'column', gap: 4,
+                  }}
+                  onMouseEnter={e => { if (clickable) e.currentTarget.style.background = 'var(--bg-card)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  {/* Name + spinner/dot */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    {isRunning
+                      ? <span className="spinner" />
+                      : <span style={{
+                          width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                          background: statusColor(p.status),
+                        }} />
+                    }
+                    <span style={{
+                      fontSize: '0.82rem', fontWeight: 500, color: 'var(--text-primary)',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      flex: 1,
+                    }}>
+                      {p.name}
+                    </span>
+                  </div>
+
+                  {/* Time info */}
+                  <div style={{ paddingLeft: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
+                      {formatTime(p.started_at)}
+                    </span>
+                    {isRunning ? (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>
+                        {elapsed(p.started_at)}
+                      </span>
+                    ) : (
+                      <span style={{
+                        fontSize: '0.7rem', color: statusColor(p.status),
+                        textTransform: 'uppercase', letterSpacing: '0.3px',
+                      }}>
+                        {p.status.replace('_', ' ')}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Error hint */}
+                  {p.status === 'error' && p.error_message && (
+                    <div style={{
+                      paddingLeft: 14, fontSize: '0.7rem', color: 'var(--status-error)',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {p.error_message}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Shared Button Style ──────────────────────────────────────────────────────
 
 const accentBtn = {
@@ -1018,6 +1249,7 @@ function App() {
   const [tokenStreams, setTokenStreams] = useState({});
   const [toasts, setToasts] = useState([]);
   const [wsConnected, setWsConnected] = useState(false);
+  const [focusedAgentId, setFocusedAgentId] = useState(null);
   const wsRef = useRef(null);
   const reconnectDelay = useRef(1000);
   const toastId = useRef(0);
@@ -1220,7 +1452,7 @@ function App() {
       case 'icm':
         return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} />;
       case 'agents':
-        return <AgentsView processes={processes} onRunReport={runReport} />;
+        return <AgentsView processes={processes} onRunReport={runReport} focusedAgentId={focusedAgentId} />;
       case 'settings':
         return <SettingsView ollamaStatus={ollamaStatus} claudeStatus={claudeStatus} linearStatus={linearStatus} />;
       default:
@@ -1241,8 +1473,20 @@ function App() {
           wsConnected={wsConnected}
         />
         <main style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ flex: 1, overflow: 'hidden' }}>
-            {mainContent()}
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+            <div style={{ flex: 1, overflow: 'hidden' }}>
+              {mainContent()}
+            </div>
+            <ProcessPanel
+              processes={processes}
+              onNavigate={(agentId) => {
+                setFocusedAgentId(null);           // reset first so useEffect fires even on re-click
+                setTimeout(() => {
+                  setActiveView('agents');
+                  setFocusedAgentId(agentId);
+                }, 0);
+              }}
+            />
           </div>
         </main>
       </div>
