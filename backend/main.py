@@ -112,6 +112,10 @@ class FileWriteRequest(BaseModel):
     content: str
 
 
+class PromoteRequest(BaseModel):
+    path: str
+
+
 # ─── Workspace path helpers ────────────────────────────────────────────────────
 
 _WRITABLE_PATTERNS = [
@@ -235,6 +239,19 @@ async def write_workspace_file(req: FileWriteRequest):
         raise HTTPException(status_code=404, detail="File not found — only editing existing files is supported")
     resolved.write_text(req.content, encoding="utf-8")
     return {"path": req.path, "saved": True}
+
+
+@app.post("/api/workspace/promote")
+async def promote_file(req: PromoteRequest):
+    resolved = _resolve_ws_path(req.path)
+    relative = str(resolved.relative_to(WORKSPACE_PATH))
+    if "01_intake/quarantine" not in relative:
+        raise HTTPException(status_code=403, detail="Can only promote files from 01_intake/quarantine/")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    dest = WORKSPACE_PATH / "01_intake" / "trusted" / resolved.name
+    resolved.rename(dest)
+    return {"promoted_to": str(dest.relative_to(WORKSPACE_PATH))}
 
 
 @app.get("/api/chat/history")
