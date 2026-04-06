@@ -288,9 +288,13 @@ async def promote_file(req: PromoteRequest):
 
 @app.get("/api/icm/{stage_number}/output-files")
 async def get_stage_output_files(stage_number: int):
-    if stage_number not in range(2, 7):
-        raise HTTPException(status_code=400, detail="Stage number must be 2-6")
-    out_dir = WORKSPACE_PATH / _stage_path(stage_number) / "output"
+    if stage_number not in range(1, 7):
+        raise HTTPException(status_code=400, detail="Stage number must be 1-6")
+    # Stage 1 (intake) reads from trusted/ instead of output/
+    if stage_number == 1:
+        out_dir = WORKSPACE_PATH / "01_intake" / "trusted"
+    else:
+        out_dir = WORKSPACE_PATH / _stage_path(stage_number) / "output"
     if not out_dir.is_dir():
         return {"files": []}
     files = []
@@ -313,12 +317,16 @@ async def get_stage_output_files(stage_number: int):
 
 @app.post("/api/icm/promote/{stage_number}")
 async def promote_icm_files(stage_number: int, req: ICMPromoteRequest):
-    if stage_number not in range(2, 6):
-        raise HTTPException(status_code=400, detail="Stage number must be 2-5 (stage 6 has no next stage)")
+    if stage_number not in range(1, 6):
+        raise HTTPException(status_code=400, detail="Stage number must be 1-5 (stage 6 has no next stage)")
     if not req.selected_files:
         raise HTTPException(status_code=400, detail="selected_files must be non-empty")
 
-    src_dir = WORKSPACE_PATH / _stage_path(stage_number) / "output"
+    # Stage 1 (intake) promotes from trusted/ instead of output/
+    if stage_number == 1:
+        src_dir = WORKSPACE_PATH / "01_intake" / "trusted"
+    else:
+        src_dir = WORKSPACE_PATH / _stage_path(stage_number) / "output"
     next_stage = stage_number + 1
     dest_dir = WORKSPACE_PATH / _stage_path(next_stage) / "input"
 

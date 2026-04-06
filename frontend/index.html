@@ -948,8 +948,8 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
         </div>
       )}
 
-      {/* Promote panel — inline below review banner */}
-      {promoteOpen && needsReview && stage.stage_number < 6 && (
+      {/* Promote panel — inline below review banner or intake trusted section */}
+      {promoteOpen && (needsReview || isIntake) && stage.stage_number < 6 && (
         <PromotePanel
           stage={stage}
           addToast={addToast}
@@ -1017,10 +1017,19 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
 
               {/* Right: trusted */}
               <div>
-                <h4 style={{ color: 'var(--accent)', fontSize: '0.8rem', marginBottom: 8,
-                  textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Trusted — Ready for Discovery
-                </h4>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <h4 style={{ color: 'var(--accent)', fontSize: '0.8rem',
+                    textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Trusted — Ready for Discovery
+                  </h4>
+                  {outputFiles.length > 0 && (
+                    <button
+                      onClick={() => setPromoteOpen(o => !o)}
+                      style={{ ...accentBtn, padding: '3px 10px', fontSize: '0.75rem' }}>
+                      {promoteOpen ? 'Cancel' : 'Send to Discovery →'}
+                    </button>
+                  )}
+                </div>
                 {filesLoading ? (
                   <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
                 ) : outputFiles.length === 0 ? (
