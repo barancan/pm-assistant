@@ -512,6 +512,18 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
     }
   };
 
+  const promoteFile = async (filePath, fileName) => {
+    try {
+      await API.post('/api/workspace/promote', { path: filePath });
+      addToast(`${fileName} promoted to trusted`, 'success');
+      // Re-fetch intake file list by briefly collapsing then re-expanding
+      setExpanded(null);
+      setTimeout(() => setExpanded(1), 50);
+    } catch (err) {
+      addToast(`Promote failed: ${err.message}`, 'error');
+    }
+  };
+
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
       <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>ICM Pipeline</h1>
@@ -526,6 +538,7 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
             onRunStage={onRunStage}
             onMarkDone={onMarkDone}
             onOpenFile={openFile}
+            onPromote={promoteFile}
           />
         ))}
       </div>
@@ -534,7 +547,7 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
   );
 }
 
-function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile }) {
+function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile, onPromote }) {
   const tokenRef = useRef(null);
   const [inputFiles, setInputFiles] = useState([]);
   const [outputFiles, setOutputFiles] = useState([]);
@@ -558,11 +571,9 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
             API.get('/api/workspace/files?dir=01_intake%2Ftrusted'),
             API.get('/api/workspace/files?dir=01_intake%2Fquarantine'),
           ]);
-          setInputFiles([
-            ...tData.files.map(f => ({ ...f, label: `trusted/${f.name}` })),
-            ...qData.files.map(f => ({ ...f, label: `quarantine/${f.name}` })),
-          ]);
-          setOutputFiles([]);
+          // quarantine = needs review (left/input), trusted = ready for discovery (right/output)
+          setInputFiles(qData.files.map(f => ({ ...f, label: f.name })));
+          setOutputFiles(tData.files.map(f => ({ ...f, label: f.name })));
         } else {
           const [inData, outData] = await Promise.all([
             API.get(`/api/workspace/files?dir=${encodeURIComponent(stagePath + '/input')}`),
@@ -675,53 +686,110 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
 
       {/* Expanded content */}
       {expanded && (
-        <div style={{
-          borderTop: '1px solid var(--border)',
-          padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
-        }}>
-          {/* Input Files */}
-          <div>
-            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8,
-              textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Input Files
-            </h4>
-            {filesLoading ? (
-              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
-            ) : inputFiles.length === 0 ? (
-              <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
-                {isIntake
-                  ? 'Place files in 01_intake/trusted/ or 01_intake/quarantine/'
-                  : `No input files — add .md files to 0${stage.stage_number}_${stage.stage_name}/input/`}
-              </p>
-            ) : inputFiles.map(f => (
-              <button key={f.path} onClick={() => onOpenFile(f.path, f.label, false)}
-                style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
-                  cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
-                  fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
-                {f.label}
-              </button>
-            ))}
-          </div>
+        <div style={{ borderTop: '1px solid var(--border)', padding: 20 }}>
+          {isIntake ? (
+            /* ── Intake: quarantine → trusted workflow ── */
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              {/* Left: quarantine */}
+              <div>
+                <h4 style={{ color: 'var(--status-review)', fontSize: '0.8rem', marginBottom: 8,
+                  textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Quarantine — Pending Review
+                </h4>
+                {filesLoading ? (
+                  <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+                ) : inputFiles.length === 0 ? (
+                  <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                    No files pending review. Drop .md files into 01_intake/quarantine/.
+                  </p>
+                ) : inputFiles.map(f => (
+                  <div key={f.path} style={{ display: 'flex', alignItems: 'center',
+                    justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
+                    <button onClick={() => onOpenFile(f.path, f.label, false)}
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)',
+                        cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                        fontSize: '0.8rem', textDecoration: 'underline',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                      {f.label}
+                    </button>
+                    <button
+                      onClick={() => onPromote(f.path, f.label)}
+                      style={{ ...accentBtn, background: 'var(--status-review)',
+                        padding: '3px 10px', fontSize: '0.75rem', flexShrink: 0 }}>
+                      Promote
+                    </button>
+                  </div>
+                ))}
+              </div>
 
-          {/* Output Files */}
-          <div>
-            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8,
-              textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Output Files
-            </h4>
-            {filesLoading ? (
-              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
-            ) : outputFiles.length === 0 ? (
-              <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No output yet</p>
-            ) : outputFiles.map(f => (
-              <button key={f.path} onClick={() => onOpenFile(f.path, f.label, true)}
-                style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
-                  cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
-                  fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
-                {f.label}
-              </button>
-            ))}
-          </div>
+              {/* Right: trusted */}
+              <div>
+                <h4 style={{ color: 'var(--accent)', fontSize: '0.8rem', marginBottom: 8,
+                  textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Trusted — Ready for Discovery
+                </h4>
+                {filesLoading ? (
+                  <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+                ) : outputFiles.length === 0 ? (
+                  <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                    No trusted files yet. Promote files from quarantine, or run the Daily Report.
+                  </p>
+                ) : outputFiles.map(f => (
+                  <button key={f.path} onClick={() => onOpenFile(f.path, f.label, false)}
+                    style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
+                      cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                      fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* ── Regular stages: input / output files ── */
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              {/* Input Files */}
+              <div>
+                <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8,
+                  textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Input Files
+                </h4>
+                {filesLoading ? (
+                  <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+                ) : inputFiles.length === 0 ? (
+                  <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                    No input files — add .md files to 0{stage.stage_number}_{stage.stage_name}/input/
+                  </p>
+                ) : inputFiles.map(f => (
+                  <button key={f.path} onClick={() => onOpenFile(f.path, f.label, false)}
+                    style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
+                      cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                      fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Output Files */}
+              <div>
+                <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8,
+                  textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Output Files
+                </h4>
+                {filesLoading ? (
+                  <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+                ) : outputFiles.length === 0 ? (
+                  <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No output yet</p>
+                ) : outputFiles.map(f => (
+                  <button key={f.path} onClick={() => onOpenFile(f.path, f.label, true)}
+                    style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
+                      cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                      fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
