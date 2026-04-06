@@ -1,7 +1,7 @@
 # PM Assistant Workspace — CLAUDE.md
 
 ## Identity
-This is Baran's PM workspace. Baran is a senior product manager with 
+This is a PM workspace. User is a senior product manager with 
 10+ years experience, computer science background, and big data 
 analytics MSc. Technical depth is expected. No hand-holding.
 
