@@ -510,10 +510,29 @@ async def run_icm_stage(stage_number: int):
 @app.post("/api/processes/{process_id}/cancel")
 async def cancel_process(process_id: str):
     task = _running_tasks.get(process_id)
-    if task is None or task.done():
-        raise HTTPException(status_code=404, detail="No running process with that ID")
-    task.cancel()
-    return {"process_id": process_id, "status": "cancelling"}
+    if task and not task.done():
+        # Live task — cancel it; _run_agent's CancelledError handler updates the DB
+        task.cancel()
+        return {"process_id": process_id, "status": "cancelling"}
+
+    # No live task — could be a stale 'running' record from before this server start.
+    # Mark it cancelled in the DB directly.
+    processes = await database.get_all_processes()
+    match = next((p for p in processes if p["id"] == process_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Process not found")
+    if match["status"] != "running":
+        raise HTTPException(status_code=400, detail=f"Process is already {match['status']}")
+    await database.upsert_process(
+        id=process_id,
+        name=match["name"],
+        type=match["type"],
+        status="cancelled",
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        error_message="Cancelled by user (process had no live task)",
+    )
+    await broadcast_update("process_update", {"process_id": process_id, "status": "cancelled"})
+    return {"process_id": process_id, "status": "cancelled"}
 
 
 async def _run_agent(agent, process_id: str) -> None:
