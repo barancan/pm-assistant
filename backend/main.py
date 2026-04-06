@@ -62,6 +62,9 @@ class ConnectionManager:
 manager = ConnectionManager()
 orchestrator = Orchestrator()
 
+# Registry of running asyncio tasks keyed by process_id
+_running_tasks: dict[str, asyncio.Task] = {}
+
 
 async def broadcast_update(event_type: str, data: dict) -> None:
     await manager.broadcast({"type": event_type, **data})
@@ -436,10 +439,8 @@ async def _execute_action(action: str) -> None:
         process_id = str(uuid.uuid4())
         agent = LinearReportAgent()
         agent.set_broadcast(broadcast_update)
-        try:
-            await agent.run(process_id)
-        except Exception as exc:
-            print(f"[Action] Linear report error: {exc}")
+        task = asyncio.create_task(_run_agent(agent, process_id))
+        _running_tasks[process_id] = task
 
     elif action.startswith("run_icm_stage:"):
         try:
@@ -447,7 +448,8 @@ async def _execute_action(action: str) -> None:
             process_id = str(uuid.uuid4())
             agent = ICMRunnerAgent(stage_number)
             agent.set_broadcast(broadcast_update)
-            await agent.run(process_id)
+            task = asyncio.create_task(_run_agent(agent, process_id))
+            _running_tasks[process_id] = task
         except Exception as exc:
             print(f"[Action] ICM stage error: {exc}")
 
@@ -467,7 +469,8 @@ async def run_linear_report():
     agent = LinearReportAgent()
     agent.set_broadcast(broadcast_update)
 
-    asyncio.create_task(_run_agent(agent, process_id))
+    task = asyncio.create_task(_run_agent(agent, process_id))
+    _running_tasks[process_id] = task
 
     return {"process_id": process_id, "status": "started"}
 
@@ -498,16 +501,42 @@ async def run_icm_stage(stage_number: int):
     agent = ICMRunnerAgent(stage_number)
     agent.set_broadcast(broadcast_update)
 
-    asyncio.create_task(_run_agent(agent, process_id))
+    task = asyncio.create_task(_run_agent(agent, process_id))
+    _running_tasks[process_id] = task
 
     return {"process_id": process_id, "stage": stage_number, "status": "started"}
+
+
+@app.post("/api/processes/{process_id}/cancel")
+async def cancel_process(process_id: str):
+    task = _running_tasks.get(process_id)
+    if task is None or task.done():
+        raise HTTPException(status_code=404, detail="No running process with that ID")
+    task.cancel()
+    return {"process_id": process_id, "status": "cancelling"}
 
 
 async def _run_agent(agent, process_id: str) -> None:
     try:
         await agent.run(process_id)
+    except asyncio.CancelledError:
+        await database.upsert_process(
+            id=process_id,
+            name=getattr(agent, "_process_name", "Process"),
+            type=getattr(agent, "_process_type", "agent"),
+            status="cancelled",
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            error_message="Cancelled by user",
+        )
+        await broadcast_update("process_update", {
+            "process_id": process_id,
+            "status": "cancelled",
+            "name": getattr(agent, "_process_name", "Process"),
+        })
     except Exception as exc:
         print(f"[Agent] Error running {type(agent).__name__}: {exc}")
+    finally:
+        _running_tasks.pop(process_id, None)
 
 
 # ─── WebSocket ─────────────────────────────────────────────────────────────────

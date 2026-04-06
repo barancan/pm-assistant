@@ -138,6 +138,7 @@ function statusColor(status) {
     error: 'var(--status-error)',
     done: 'var(--status-done)',
     idle: 'var(--status-idle)',
+    cancelled: 'var(--text-dim)',
   };
   return map[status] || 'var(--text-dim)';
 }
@@ -1455,9 +1456,10 @@ function processTypeToAgentId(type) {
   return map[type] || null;
 }
 
-function ProcessPanel({ processes, onNavigate }) {
+function ProcessPanel({ processes, onNavigate, onCancel }) {
   const [open, setOpen] = useState(true);
   const [tick, setTick] = useState(0);
+  const [cancelling, setCancelling] = useState({});
 
   // Re-render every second so elapsed timers update
   useEffect(() => {
@@ -1533,7 +1535,7 @@ function ProcessPanel({ processes, onNavigate }) {
                   onMouseEnter={e => { if (clickable) e.currentTarget.style.background = 'var(--bg-card)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
-                  {/* Name + spinner/dot */}
+                  {/* Name + spinner/dot + kill button */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                     {isRunning
                       ? <span className="spinner" />
@@ -1549,6 +1551,29 @@ function ProcessPanel({ processes, onNavigate }) {
                     }}>
                       {p.name}
                     </span>
+                    {isRunning && (
+                      <button
+                        title="Kill process"
+                        disabled={!!cancelling[p.id]}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setCancelling(prev => ({ ...prev, [p.id]: true }));
+                          onCancel(p.id).finally(() =>
+                            setCancelling(prev => ({ ...prev, [p.id]: false }))
+                          );
+                        }}
+                        style={{
+                          background: 'none', border: '1px solid var(--status-error)',
+                          borderRadius: 4, color: 'var(--status-error)',
+                          cursor: cancelling[p.id] ? 'not-allowed' : 'pointer',
+                          fontSize: '0.7rem', padding: '1px 5px', flexShrink: 0,
+                          opacity: cancelling[p.id] ? 0.5 : 1,
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        ⏹
+                      </button>
+                    )}
                   </div>
 
                   {/* Time info */}
@@ -1850,11 +1875,20 @@ function App() {
             <ProcessPanel
               processes={processes}
               onNavigate={(agentId) => {
-                setFocusedAgentId(null);           // reset first so useEffect fires even on re-click
+                setFocusedAgentId(null);
                 setTimeout(() => {
                   setActiveView('agents');
                   setFocusedAgentId(agentId);
                 }, 0);
+              }}
+              onCancel={async (processId) => {
+                try {
+                  await API.post(`/api/processes/${processId}/cancel`, {});
+                  addToast('Process cancelled', 'info');
+                  await loadStatus();
+                } catch (err) {
+                  addToast(`Could not cancel: ${err.message}`, 'error');
+                }
               }}
             />
           </div>
