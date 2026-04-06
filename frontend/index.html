@@ -493,9 +493,10 @@ function FileModal({ file, onClose, addToast }) {
 
 // ─── ICM Pipeline View ────────────────────────────────────────────────────────
 
-function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
+function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast, onRefreshStages }) {
   const [expanded, setExpanded] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const loadStages = onRefreshStages;
 
   const toggleExpand = (stageNum) => {
     setExpanded(prev => prev === stageNum ? null : stageNum);
@@ -539,6 +540,8 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
             onMarkDone={onMarkDone}
             onOpenFile={openFile}
             onPromote={promoteFile}
+            addToast={addToast}
+            onRefreshStages={loadStages}
           />
         ))}
       </div>
@@ -547,11 +550,279 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
   );
 }
 
-function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile, onPromote }) {
+// ─── Promote Panel ────────────────────────────────────────────────────────────
+
+function PromotePanel({ stage, onDone, addToast }) {
+  const nextStage = stage.stage_number + 1;
+  const nextNames = { 3: 'opportunity', 4: 'prd', 5: 'critique', 6: 'stories' };
+  const nextName = nextNames[nextStage] || '';
+
+  const [outputFiles, setOutputFiles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  // Map of filename → { checked, uploaded, uploading, error }
+  const [fileState, setFileState] = useState({});
+  const [promoting, setPromoting] = useState(false);
+  const [done, setDone] = useState(false);
+  const dropRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const fetchOutputFiles = async () => {
+      setLoading(true);
+      try {
+        const data = await API.get(`/api/icm/${stage.stage_number}/output-files`);
+        setOutputFiles(data.files || []);
+        const initial = {};
+        (data.files || []).forEach(f => { initial[f.name] = { checked: false, uploaded: false }; });
+        setFileState(initial);
+      } catch {
+        setOutputFiles([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchOutputFiles();
+  }, [stage.stage_number]);
+
+  const allChecked = outputFiles.length > 0 &&
+    outputFiles.concat(Object.keys(fileState).filter(n => fileState[n].uploaded).map(n => ({ name: n })))
+      .every(f => fileState[f.name]?.checked);
+
+  const toggleAll = () => {
+    const allNames = Object.keys(fileState);
+    const shouldCheck = !allNames.every(n => fileState[n]?.checked);
+    setFileState(prev => {
+      const next = { ...prev };
+      allNames.forEach(n => { next[n] = { ...next[n], checked: shouldCheck }; });
+      return next;
+    });
+  };
+
+  const toggleFile = (name) => {
+    setFileState(prev => ({ ...prev, [name]: { ...prev[name], checked: !prev[name]?.checked } }));
+  };
+
+  const uploadFile = async (file) => {
+    const name = file.name;
+    const ext = name.split('.').pop().toLowerCase();
+    if (!['md', 'txt', 'jpg', 'jpeg', 'png'].includes(ext)) {
+      addToast(`Only .md, .txt, .jpeg, .jpg, .png files accepted`, 'error');
+      return;
+    }
+    // Mark as uploading
+    setFileState(prev => ({ ...prev, [name]: { checked: false, uploaded: false, uploading: true, error: null } }));
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const r = await fetch(`/api/icm/${nextStage}/upload`, { method: 'POST', body: form });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        throw new Error(err.detail || r.statusText);
+      }
+      const data = await r.json();
+      const savedName = data.saved_as;
+      setFileState(prev => {
+        const next = { ...prev };
+        // Remove old uploading entry (original name) and add with saved name
+        delete next[name];
+        next[savedName] = { checked: true, uploaded: true, uploading: false, error: null };
+        return next;
+      });
+    } catch (err) {
+      setFileState(prev => ({ ...prev, [name]: { checked: false, uploaded: false, uploading: false, error: err.message } }));
+    }
+  };
+
+  const handleFiles = (files) => {
+    Array.from(files).forEach(uploadFile);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    dropRef.current && dropRef.current.classList.remove('drop-hover');
+    handleFiles(e.dataTransfer.files);
+  };
+
+  const selectedNames = Object.keys(fileState).filter(n => fileState[n]?.checked && !fileState[n]?.uploading);
+  const canPromote = selectedNames.length > 0 && !promoting;
+
+  const handlePromote = async () => {
+    setPromoting(true);
+    try {
+      await API.post(`/api/icm/promote/${stage.stage_number}`, { selected_files: selectedNames });
+      setDone(true);
+      addToast(`${selectedNames.length} file(s) ready in Stage ${nextStage} input`, 'success');
+      setTimeout(() => onDone(), 2000);
+    } catch (err) {
+      addToast(`Promote failed: ${err.message}`, 'error');
+      setPromoting(false);
+    }
+  };
+
+  const formatBytes = (b) => b < 1024 ? `${b}B` : b < 1048576 ? `${(b/1024).toFixed(1)}KB` : `${(b/1048576).toFixed(1)}MB`;
+
+  // All file rows: output files + uploaded files not in output
+  const outputNames = new Set(outputFiles.map(f => f.name));
+  const uploadedNames = Object.keys(fileState).filter(n => fileState[n]?.uploaded);
+  const allFileRows = [
+    ...outputFiles.map(f => ({ ...f, isUploaded: false })),
+    ...uploadedNames.filter(n => !outputNames.has(n)).map(n => ({ name: n, isUploaded: true })),
+  ];
+
+  if (done) {
+    return (
+      <div style={{ background: '#1a1a1a', borderTop: '1px solid var(--border)', padding: '16px 20px' }}>
+        <span style={{ color: 'var(--accent)', fontSize: '0.9rem' }}>
+          ✓ {selectedNames.length} file(s) ready in Stage {nextStage} — {nextName} input
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#1a1a1a', borderTop: '1px solid var(--border)' }}>
+      {/* Section A: output files */}
+      <div style={{ padding: '16px 20px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem',
+            textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            Select from output
+          </h4>
+          {allFileRows.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+              color: 'var(--text-dim)', fontSize: '0.78rem' }}>
+              <input type="checkbox" checked={allChecked} onChange={toggleAll}
+                style={{ accentColor: 'var(--accent)' }} />
+              Select all
+            </label>
+          )}
+        </div>
+
+        {loading ? (
+          <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem', paddingBottom: 12 }}>Loading…</div>
+        ) : allFileRows.length === 0 ? (
+          <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem', paddingBottom: 12 }}>
+            No output files yet. Run the stage first, or upload files below.
+          </p>
+        ) : allFileRows.map(f => {
+          const state = fileState[f.name] || {};
+          return (
+            <label key={f.name}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px',
+                borderRadius: 6, cursor: 'pointer', marginBottom: 2,
+                background: state.checked ? '#1DB95411' : 'transparent',
+                transition: 'background 0.1s' }}
+              onMouseEnter={e => { if (!state.checked) e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
+              onMouseLeave={e => { if (!state.checked) e.currentTarget.style.background = 'transparent'; }}
+            >
+              <input type="checkbox" checked={!!state.checked} onChange={() => toggleFile(f.name)}
+                style={{ accentColor: 'var(--accent)', flexShrink: 0 }} />
+              <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.82rem',
+                color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {f.name}
+              </span>
+              {f.isUploaded && (
+                <span style={{ fontSize: '0.7rem', padding: '2px 7px', borderRadius: 10,
+                  background: '#1DB95433', color: 'var(--accent)', flexShrink: 0 }}>
+                  uploaded
+                </span>
+              )}
+              {f.size_bytes != null && (
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', flexShrink: 0 }}>
+                  {formatBytes(f.size_bytes)}
+                </span>
+              )}
+              {f.modified_at && (
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', flexShrink: 0 }}>
+                  {formatTime(f.modified_at)}
+                </span>
+              )}
+            </label>
+          );
+        })}
+
+        {/* Uploading / errored files */}
+        {Object.entries(fileState).filter(([, s]) => s.uploading || s.error).map(([name, state]) => (
+          <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 10,
+            padding: '7px 8px', marginBottom: 2 }}>
+            {state.uploading
+              ? <span className="spinner" />
+              : <span style={{ color: 'var(--status-error)', fontSize: '0.9rem' }}>✕</span>}
+            <span style={{ fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--text-dim)',
+              flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {name}
+            </span>
+            {state.error && (
+              <span style={{ fontSize: '0.72rem', color: 'var(--status-error)' }}>{state.error}</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Section B: upload zone */}
+      <div style={{ padding: '12px 20px 0' }}>
+        <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem',
+          textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>
+          Upload files
+        </h4>
+        <div
+          ref={dropRef}
+          onClick={() => inputRef.current?.click()}
+          onDragOver={e => { e.preventDefault(); dropRef.current.style.borderColor = 'var(--accent)'; dropRef.current.style.background = '#1DB95408'; }}
+          onDragLeave={() => { dropRef.current.style.borderColor = 'var(--text-dim)'; dropRef.current.style.background = 'transparent'; }}
+          onDrop={handleDrop}
+          style={{ border: '1px dashed var(--text-dim)', borderRadius: 8,
+            padding: '18px 16px', textAlign: 'center', cursor: 'pointer',
+            transition: 'border-color 0.15s, background 0.15s' }}
+        >
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 4 }}>
+            Drop files here or click to browse
+          </div>
+          <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
+            Markdown, plain text, images (.md, .txt, .jpg, .jpeg, .png)
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept=".md,.txt,.jpg,.jpeg,.png"
+            style={{ display: 'none' }}
+            onChange={e => { handleFiles(e.target.files); e.target.value = ''; }}
+          />
+        </div>
+      </div>
+
+      {/* Confirm bar */}
+      <div style={{ padding: '12px 20px 16px', display: 'flex',
+        justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span style={{ color: 'var(--text-dim)', fontSize: '0.82rem' }}>
+          {selectedNames.length > 0
+            ? `Promoting ${selectedNames.length} file(s) to Stage ${nextStage} input →`
+            : `Select files to promote to Stage ${nextStage} — ${nextName}`}
+        </span>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <button onClick={onDone}
+            style={{ ...accentBtn, background: 'var(--text-dim)', padding: '6px 14px', fontSize: '0.8rem' }}>
+            Cancel
+          </button>
+          <button onClick={handlePromote} disabled={!canPromote}
+            style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem',
+              background: canPromote ? 'var(--accent)' : 'var(--text-dim)',
+              cursor: canPromote ? 'pointer' : 'not-allowed' }}>
+            {promoting ? 'Promoting…' : 'Promote Selected'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile, onPromote, addToast, onRefreshStages }) {
   const tokenRef = useRef(null);
   const [inputFiles, setInputFiles] = useState([]);
   const [outputFiles, setOutputFiles] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [promoteOpen, setPromoteOpen] = useState(false);
 
   useEffect(() => {
     if (tokenRef.current && tokenStream) {
@@ -653,18 +924,40 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
       {needsReview && (
         <div style={{
           background: '#F59B2322', borderTop: '1px solid #F59B2344',
-          padding: '10px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '10px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
         }}>
           <span style={{ color: 'var(--status-review)', fontSize: '0.85rem' }}>
             ⚠ Output ready for review. Review before advancing.
           </span>
-          <button
-            onClick={() => onMarkDone(stage.stage_number)}
-            style={{ ...accentBtn, background: 'var(--status-review)', padding: '6px 14px', fontSize: '0.8rem' }}
-          >
-            Mark as Done
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={() => onMarkDone(stage.stage_number)}
+              style={{ ...accentBtn, background: 'var(--status-review)', padding: '6px 14px', fontSize: '0.8rem' }}
+            >
+              Mark as Done
+            </button>
+            {stage.stage_number < 6 && (
+              <button
+                onClick={() => setPromoteOpen(o => !o)}
+                style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem' }}
+              >
+                {promoteOpen ? 'Cancel' : `Promote to Stage ${stage.stage_number + 1} →`}
+              </button>
+            )}
+          </div>
         </div>
+      )}
+
+      {/* Promote panel — inline below review banner */}
+      {promoteOpen && needsReview && stage.stage_number < 6 && (
+        <PromotePanel
+          stage={stage}
+          addToast={addToast}
+          onDone={() => {
+            setPromoteOpen(false);
+            onRefreshStages && onRefreshStages();
+          }}
+        />
       )}
 
       {/* Token stream when running */}
@@ -1518,7 +1811,7 @@ function App() {
       case 'report':
         return <ReportView report={report} loading={reportLoading} onRunReport={runReport} />;
       case 'icm':
-        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} />;
+        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
       case 'agents':
         return <AgentsView processes={processes} onRunReport={runReport} focusedAgentId={focusedAgentId} />;
       case 'settings':
