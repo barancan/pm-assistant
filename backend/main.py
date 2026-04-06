@@ -107,6 +107,40 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class FileWriteRequest(BaseModel):
+    path: str
+    content: str
+
+
+# ─── Workspace path helpers ────────────────────────────────────────────────────
+
+_WRITABLE_PATTERNS = [
+    "01_intake/quarantine",
+    "01_intake/trusted",
+    "02_discovery/output",
+    "03_opportunity/output",
+    "04_prd/output",
+    "05_critique/output",
+    "06_stories/output",
+]
+
+
+def _resolve_ws_path(relative: str) -> Path:
+    """Resolve a relative path against WORKSPACE_PATH; raise 400/403 if invalid."""
+    if not relative or Path(relative).is_absolute():
+        raise HTTPException(status_code=400, detail="Path must be relative")
+    resolved = (WORKSPACE_PATH / relative).resolve()
+    if not str(resolved).startswith(str(WORKSPACE_PATH)):
+        raise HTTPException(status_code=403, detail="Path escapes workspace boundary")
+    return resolved
+
+
+def _assert_writable_ws(resolved: Path) -> None:
+    relative = str(resolved.relative_to(WORKSPACE_PATH))
+    if not any(p in relative for p in _WRITABLE_PATTERNS):
+        raise HTTPException(status_code=403, detail="Path is not in an approved write location")
+
+
 # ─── Helper: build status snapshot ────────────────────────────────────────────
 
 async def get_status_snapshot() -> dict:
@@ -129,11 +163,17 @@ async def get_status_snapshot() -> dict:
         "configured" if os.environ.get("ANTHROPIC_API_KEY") else "not_configured"
     )
 
+    # Check Linear
+    linear_status = (
+        "configured" if os.environ.get("LINEAR_API_KEY") else "not_configured"
+    )
+
     return {
         "processes": processes,
         "icm_stages": icm_stages,
         "ollama_status": ollama_status,
         "claude_status": claude_status,
+        "linear_status": linear_status,
     }
 
 
@@ -154,6 +194,47 @@ async def get_latest_report():
 async def get_icm_stages():
     stages = await database.get_all_icm_stages()
     return {"stages": stages}
+
+
+@app.get("/api/workspace/files")
+async def list_workspace_files(dir: str):
+    resolved = _resolve_ws_path(dir)
+    if not resolved.is_dir():
+        raise HTTPException(status_code=404, detail="Directory not found")
+    files = []
+    for f in sorted(resolved.iterdir()):
+        if f.name.startswith(".") or f.is_dir():
+            continue
+        stat = f.stat()
+        files.append({
+            "name": f.name,
+            "path": str(f.relative_to(WORKSPACE_PATH)),
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return {"files": files}
+
+
+@app.get("/api/workspace/file")
+async def read_workspace_file(path: str):
+    resolved = _resolve_ws_path(path)
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File is not valid UTF-8 text")
+    return {"path": path, "content": content}
+
+
+@app.put("/api/workspace/file")
+async def write_workspace_file(req: FileWriteRequest):
+    resolved = _resolve_ws_path(req.path)
+    _assert_writable_ws(resolved)
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found — only editing existing files is supported")
+    resolved.write_text(req.content, encoding="utf-8")
+    return {"path": req.path, "saved": True}
 
 
 @app.get("/api/chat/history")

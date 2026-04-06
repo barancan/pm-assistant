@@ -20,6 +20,30 @@ def get_db_path() -> str:
 
 async def init_db() -> None:
     async with aiosqlite.connect(get_db_path()) as db:
+        # One-time migration: old schema had auto-increment 'id' PK causing duplicates.
+        # Detect it and collapse to one row per stage_number before recreating the table.
+        async with db.execute("PRAGMA table_info(icm_stages)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "id" in cols and "stage_number" in cols:
+            await db.execute("""
+                CREATE TABLE icm_stages_new (
+                    stage_number INTEGER PRIMARY KEY,
+                    stage_name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    last_run_at TEXT,
+                    output_path TEXT
+                )
+            """)
+            await db.execute("""
+                INSERT OR IGNORE INTO icm_stages_new
+                    (stage_number, stage_name, status, last_run_at, output_path)
+                SELECT stage_number, stage_name, status, last_run_at, output_path
+                FROM icm_stages
+                GROUP BY stage_number
+            """)
+            await db.execute("DROP TABLE icm_stages")
+            await db.execute("ALTER TABLE icm_stages_new RENAME TO icm_stages")
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS processes (
                 id TEXT PRIMARY KEY,
@@ -53,8 +77,7 @@ async def init_db() -> None:
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS icm_stages (
-                id INTEGER PRIMARY KEY,
-                stage_number INTEGER NOT NULL,
+                stage_number INTEGER PRIMARY KEY,
                 stage_name TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'idle',
                 last_run_at TEXT,

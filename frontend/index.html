@@ -158,6 +158,15 @@ const API = {
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
+  async put(path, body) {
+    const r = await fetch(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  },
 };
 
 // ─── Toast Manager ────────────────────────────────────────────────────────────
@@ -240,7 +249,7 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: '◇' },
 ];
 
-function Sidebar({ activeView, setView, ollamaStatus, claudeStatus, wsConnected }) {
+function Sidebar({ activeView, setView, ollamaStatus, claudeStatus, linearStatus, wsConnected }) {
   return (
     <div style={{
       width: 240, background: 'var(--bg-sidebar)',
@@ -279,6 +288,7 @@ function Sidebar({ activeView, setView, ollamaStatus, claudeStatus, wsConnected 
         )}
         <StatusDot label="Ollama" status={ollamaStatus === 'connected'} />
         <StatusDot label="Claude" status={claudeStatus === 'configured'} />
+        <StatusDot label="Linear" status={linearStatus === 'configured'} />
       </div>
     </div>
   );
@@ -378,16 +388,114 @@ function ReportView({ report, loading, onRunReport }) {
   );
 }
 
+// ─── File Modal ───────────────────────────────────────────────────────────────
+
+function FileModal({ file, onClose, addToast }) {
+  const [editMode, setEditMode] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEditMode(false);
+    setEditContent(file?.content || '');
+  }, [file?.path]);
+
+  if (!file) return null;
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await API.put('/api/workspace/file', { path: file.path, content: editContent });
+      file.content = editContent;
+      addToast('File saved', 'success');
+      setEditMode(false);
+    } catch (err) {
+      addToast(`Save failed: ${err.message}`, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}
+      onClick={onClose}>
+      <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 24,
+        maxWidth: 800, maxHeight: '85vh', width: '92%', display: 'flex',
+        flexDirection: 'column', gap: 16 }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontFamily: 'monospace', fontSize: '0.95rem', color: 'var(--text-secondary)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>
+            {file.name}
+          </h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+            {file.editable && !editMode && !file.loading && (
+              <button onClick={() => { setEditContent(file.content || ''); setEditMode(true); }}
+                style={{ ...accentBtn, background: 'var(--bg-card-hover)', padding: '5px 12px', fontSize: '0.8rem' }}>
+                Edit
+              </button>
+            )}
+            {editMode && (
+              <>
+                <button onClick={() => setEditMode(false)}
+                  style={{ ...accentBtn, background: 'var(--text-dim)', padding: '5px 12px', fontSize: '0.8rem' }}>
+                  Cancel
+                </button>
+                <button onClick={handleSave} disabled={saving}
+                  style={{ ...accentBtn, padding: '5px 12px', fontSize: '0.8rem',
+                    background: saving ? 'var(--text-dim)' : 'var(--accent)' }}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </>
+            )}
+            <button onClick={onClose}
+              style={{ background: 'none', border: 'none', color: 'var(--text-secondary)',
+                cursor: 'pointer', fontSize: '1.2rem' }}>✕</button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1, minHeight: 200 }}>
+          {file.loading ? (
+            <div className="shimmer" style={{ height: 200 }} />
+          ) : editMode ? (
+            <textarea value={editContent} onChange={e => setEditContent(e.target.value)}
+              style={{ width: '100%', minHeight: 400, background: 'var(--bg-base)',
+                color: 'var(--text-primary)', border: '1px solid var(--border)',
+                borderRadius: 8, padding: 16, fontFamily: 'monospace', fontSize: '0.85rem',
+                lineHeight: 1.6, resize: 'vertical', outline: 'none' }} />
+          ) : (
+            <div dangerouslySetInnerHTML={{ __html: renderMarkdown(file.content || '') }}
+              style={{ lineHeight: 1.6, fontSize: '0.9rem', color: 'var(--text-secondary)' }} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── ICM Pipeline View ────────────────────────────────────────────────────────
 
-function ICMView({ stages, tokenStreams, onRunStage, onMarkDone }) {
+function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
   const [expanded, setExpanded] = useState(null);
-  const [inputFiles, setInputFiles] = useState({});
-  const [outputContent, setOutputContent] = useState({});
   const [previewFile, setPreviewFile] = useState(null);
 
   const toggleExpand = (stageNum) => {
     setExpanded(prev => prev === stageNum ? null : stageNum);
+  };
+
+  const openFile = async (filePath, fileName, editable) => {
+    setPreviewFile({ name: fileName, path: filePath, content: null, editable, loading: true });
+    try {
+      const data = await API.get(`/api/workspace/file?path=${encodeURIComponent(filePath)}`);
+      setPreviewFile({ name: fileName, path: filePath, content: data.content, editable, loading: false });
+    } catch (err) {
+      addToast(`Could not open file: ${err.message}`, 'error');
+      setPreviewFile(null);
+    }
   };
 
   return (
@@ -403,40 +511,61 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone }) {
             tokenStream={tokenStreams[stage.stage_name] || ''}
             onRunStage={onRunStage}
             onMarkDone={onMarkDone}
+            onOpenFile={openFile}
           />
         ))}
       </div>
-
-      {previewFile && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
-        }} onClick={() => setPreviewFile(null)}>
-          <div style={{
-            background: 'var(--bg-card)', borderRadius: 12, padding: 24,
-            maxWidth: 700, maxHeight: '80vh', overflowY: 'auto', width: '90%',
-          }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-              <h3>{previewFile.name}</h3>
-              <button onClick={() => setPreviewFile(null)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}>✕</button>
-            </div>
-            <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-              {previewFile.content}
-            </pre>
-          </div>
-        </div>
-      )}
+      <FileModal file={previewFile} onClose={() => setPreviewFile(null)} addToast={addToast} />
     </div>
   );
 }
 
-function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone }) {
+function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile }) {
   const tokenRef = useRef(null);
+  const [inputFiles, setInputFiles] = useState([]);
+  const [outputFiles, setOutputFiles] = useState([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+
   useEffect(() => {
     if (tokenRef.current && tokenStream) {
       tokenRef.current.scrollTop = tokenRef.current.scrollHeight;
     }
   }, [tokenStream]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const stagePath = `0${stage.stage_number}_${stage.stage_name}`;
+
+    const fetchFiles = async () => {
+      setFilesLoading(true);
+      try {
+        if (stage.stage_number === 1) {
+          const [tData, qData] = await Promise.all([
+            API.get('/api/workspace/files?dir=01_intake%2Ftrusted'),
+            API.get('/api/workspace/files?dir=01_intake%2Fquarantine'),
+          ]);
+          setInputFiles([
+            ...tData.files.map(f => ({ ...f, label: `trusted/${f.name}` })),
+            ...qData.files.map(f => ({ ...f, label: `quarantine/${f.name}` })),
+          ]);
+          setOutputFiles([]);
+        } else {
+          const [inData, outData] = await Promise.all([
+            API.get(`/api/workspace/files?dir=${encodeURIComponent(stagePath + '/input')}`),
+            API.get(`/api/workspace/files?dir=${encodeURIComponent(stagePath + '/output')}`),
+          ]);
+          setInputFiles(inData.files.map(f => ({ ...f, label: f.name })));
+          setOutputFiles(outData.files
+            .sort((a, b) => b.modified.localeCompare(a.modified))
+            .slice(0, 5)
+            .map(f => ({ ...f, label: f.name })));
+        }
+      } catch { /* non-critical */ }
+      finally { setFilesLoading(false); }
+    };
+
+    fetchFiles();
+  }, [expanded, stage.stage_number, stage.stage_name]);
 
   const canRun = ['idle', 'done', 'error', 'needs_review'].includes(stage.status);
   const isRunning = stage.status === 'running';
@@ -536,27 +665,48 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
           borderTop: '1px solid var(--border)',
           padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
         }}>
+          {/* Input Files */}
           <div>
-            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8,
+              textTransform: 'uppercase', letterSpacing: '0.5px' }}>
               Input Files
             </h4>
-            <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
-              {isIntake
-                ? 'Place files in 01_intake/trusted/ or 01_intake/quarantine/'
-                : `Place .md files in workspace/0${stage.stage_number}_${stage.stage_name}/input/`}
-            </p>
-          </div>
-          <div>
-            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Output
-            </h4>
-            {stage.output_path ? (
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontFamily: 'monospace' }}>
-                {stage.output_path.split('/').slice(-1)[0]}
+            {filesLoading ? (
+              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+            ) : inputFiles.length === 0 ? (
+              <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                {isIntake
+                  ? 'Place files in 01_intake/trusted/ or 01_intake/quarantine/'
+                  : `No input files — add .md files to 0${stage.stage_number}_${stage.stage_name}/input/`}
               </p>
-            ) : (
+            ) : inputFiles.map(f => (
+              <button key={f.path} onClick={() => onOpenFile(f.path, f.label, false)}
+                style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
+                  cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                  fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Output Files */}
+          <div>
+            <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: 8,
+              textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Output Files
+            </h4>
+            {filesLoading ? (
+              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+            ) : outputFiles.length === 0 ? (
               <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No output yet</p>
-            )}
+            ) : outputFiles.map(f => (
+              <button key={f.path} onClick={() => onOpenFile(f.path, f.label, true)}
+                style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
+                  cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                  fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
+                {f.label}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -660,7 +810,7 @@ function AgentsView({ processes, onRunReport }) {
 
 // ─── Settings View ────────────────────────────────────────────────────────────
 
-function SettingsView({ ollamaStatus, claudeStatus }) {
+function SettingsView({ ollamaStatus, claudeStatus, linearStatus }) {
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
       <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>Settings</h1>
@@ -695,20 +845,34 @@ function SettingsView({ ollamaStatus, claudeStatus }) {
                 {claudeStatus === 'configured' ? 'Configured' : 'Not configured'}
               </span>
             </div>
+            <div style={{ height: 1, background: 'var(--border)' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>Linear</div>
+                <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>LINEAR_API_KEY — required for daily report</div>
+              </div>
+              <span style={{
+                padding: '4px 12px', borderRadius: 20, fontSize: '0.8rem',
+                background: linearStatus === 'configured' ? '#1DB95422' : '#E9142922',
+                color: linearStatus === 'configured' ? 'var(--accent)' : 'var(--status-error)',
+              }}>
+                {linearStatus === 'configured' ? 'Configured' : 'Not configured'}
+              </span>
+            </div>
           </div>
         </div>
 
         <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
           <h3 style={{ marginBottom: 12 }}>Configuration</h3>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.6 }}>
-            Edit <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4, fontFamily: 'monospace' }}>.env</code> in the project root to configure API keys and settings.
+            Edit <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4, fontFamily: 'monospace' }}>.env.local</code> in the project root to configure API keys and settings.
           </p>
           <div style={{ marginTop: 12, fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-dim)', lineHeight: 2 }}>
             <div>ANTHROPIC_API_KEY=...</div>
+            <div>LINEAR_API_KEY=...</div>
             <div>OLLAMA_HOST=http://localhost:11434</div>
             <div>OLLAMA_MODEL=gemma4:e4b</div>
             <div>LINEAR_MCP_URL=https://mcp.linear.app/mcp</div>
-            <div>LINEAR_API_KEY=... (optional)</div>
           </div>
         </div>
 
@@ -846,6 +1010,7 @@ function App() {
   const [icmStages, setIcmStages] = useState([]);
   const [ollamaStatus, setOllamaStatus] = useState('disconnected');
   const [claudeStatus, setClaudeStatus] = useState('not_configured');
+  const [linearStatus, setLinearStatus] = useState('not_configured');
   const [report, setReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
@@ -884,6 +1049,7 @@ function App() {
       setIcmStages(data.icm_stages || []);
       setOllamaStatus(data.ollama_status);
       setClaudeStatus(data.claude_status);
+      setLinearStatus(data.linear_status || 'not_configured');
     } catch {}
   }
 
@@ -944,6 +1110,7 @@ function App() {
         if (msg.icm_stages) setIcmStages(msg.icm_stages);
         if (msg.ollama_status) setOllamaStatus(msg.ollama_status);
         if (msg.claude_status) setClaudeStatus(msg.claude_status);
+        if (msg.linear_status) setLinearStatus(msg.linear_status);
         break;
 
       case 'process_update':
@@ -1051,11 +1218,11 @@ function App() {
       case 'report':
         return <ReportView report={report} loading={reportLoading} onRunReport={runReport} />;
       case 'icm':
-        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} />;
+        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} />;
       case 'agents':
         return <AgentsView processes={processes} onRunReport={runReport} />;
       case 'settings':
-        return <SettingsView ollamaStatus={ollamaStatus} claudeStatus={claudeStatus} />;
+        return <SettingsView ollamaStatus={ollamaStatus} claudeStatus={claudeStatus} linearStatus={linearStatus} />;
       default:
         return null;
     }
@@ -1070,6 +1237,7 @@ function App() {
           setView={setActiveView}
           ollamaStatus={ollamaStatus}
           claudeStatus={claudeStatus}
+          linearStatus={linearStatus}
           wsConnected={wsConnected}
         />
         <main style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
