@@ -1666,21 +1666,64 @@ function processTypeToAgentId(type) {
   return map[type] || null;
 }
 
+const PROCESS_HIDE_AFTER_MS = 60 * 1000; // 60 seconds after completion
+
 function ProcessPanel({ processes, onNavigate, onCancel }) {
   const [open, setOpen] = useState(true);
   const [tick, setTick] = useState(0);
   const [cancelling, setCancelling] = useState({});
+  // Set of process IDs manually dismissed by the user (errors)
+  const [dismissed, setDismissed] = useState(new Set());
+  // Timestamp (ms) when each non-running process was first seen as completed
+  const completedAtRef = useRef({});
 
-  // Re-render every second so elapsed timers update
+  // Re-render every second so elapsed timers and auto-hide countdown update
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Newest first, capped at 20
+  // Track when each process transitions to a completed state
+  useEffect(() => {
+    const now = Date.now();
+    processes.forEach(p => {
+      if (p.status !== 'running' && !completedAtRef.current[p.id]) {
+        // Use the DB completed_at if available, else now
+        completedAtRef.current[p.id] = p.completed_at
+          ? new Date(p.completed_at).getTime()
+          : now;
+      }
+    });
+  }, [processes]);
+
+  const now = Date.now();
+
+  // Filter: always show running; show errors until dismissed; hide others after 60s
   const sorted = [...processes]
     .sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''))
+    .filter(p => {
+      if (p.status === 'running') return true;
+      if (dismissed.has(p.id)) return false;
+      if (p.status === 'error') return true; // persist until dismissed
+      const completedAt = completedAtRef.current[p.id] || now;
+      return (now - completedAt) < PROCESS_HIDE_AFTER_MS;
+    })
     .slice(0, 20);
+
+  const hasCompleted = processes.some(p =>
+    p.status !== 'running' && p.status !== 'error' && !dismissed.has(p.id)
+  );
+
+  const clearCompleted = () => {
+    const ids = processes
+      .filter(p => p.status !== 'running' && p.status !== 'error')
+      .map(p => p.id);
+    setDismissed(prev => new Set([...prev, ...ids]));
+  };
+
+  const dismissError = (id) => {
+    setDismissed(prev => new Set([...prev, id]));
+  };
 
   return (
     <div style={{
@@ -1710,26 +1753,59 @@ function ProcessPanel({ processes, onNavigate, onCancel }) {
 
       {open && (
         <>
+          {/* Header */}
           <div style={{
             padding: '13px 16px 11px',
             borderBottom: '1px solid var(--border)',
-            fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.5px',
-            textTransform: 'uppercase', color: 'var(--text-secondary)',
-            whiteSpace: 'nowrap',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            gap: 8,
           }}>
-            Processes
+            <span style={{
+              fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.5px',
+              textTransform: 'uppercase', color: 'var(--text-secondary)',
+              whiteSpace: 'nowrap',
+            }}>
+              Processes
+            </span>
+            {hasCompleted && (
+              <button
+                onClick={clearCompleted}
+                title="Clear completed processes"
+                style={{
+                  background: 'none', border: 'none', color: 'var(--text-dim)',
+                  cursor: 'pointer', fontSize: '0.7rem', padding: '2px 6px',
+                  borderRadius: 4, whiteSpace: 'nowrap',
+                  transition: 'color 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-dim)'}
+              >
+                Clear
+              </button>
+            )}
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {sorted.length === 0 && (
               <div style={{ padding: '20px 16px', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
-                No processes yet.
+                No active processes.
               </div>
             )}
             {sorted.map(p => {
               const isRunning = p.status === 'running';
+              const isError = p.status === 'error';
               const agentId = processTypeToAgentId(p.type);
               const clickable = !!agentId;
+
+              // Countdown for non-error completed processes
+              let countdown = null;
+              if (!isRunning && !isError) {
+                const completedAt = completedAtRef.current[p.id];
+                if (completedAt) {
+                  const remaining = Math.max(0, Math.ceil((PROCESS_HIDE_AFTER_MS - (now - completedAt)) / 1000));
+                  if (remaining <= 15) countdown = remaining;
+                }
+              }
 
               return (
                 <div
@@ -1741,11 +1817,12 @@ function ProcessPanel({ processes, onNavigate, onCancel }) {
                     cursor: clickable ? 'pointer' : 'default',
                     transition: 'background 0.1s',
                     display: 'flex', flexDirection: 'column', gap: 4,
+                    opacity: !isRunning && !isError ? 0.75 : 1,
                   }}
                   onMouseEnter={e => { if (clickable) e.currentTarget.style.background = 'var(--bg-card)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
-                  {/* Name + spinner/dot + kill button */}
+                  {/* Name + spinner/dot + kill/dismiss button */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                     {isRunning
                       ? <span className="spinner" />
@@ -1777,11 +1854,23 @@ function ProcessPanel({ processes, onNavigate, onCancel }) {
                           borderRadius: 4, color: 'var(--status-error)',
                           cursor: cancelling[p.id] ? 'not-allowed' : 'pointer',
                           fontSize: '0.7rem', padding: '1px 5px', flexShrink: 0,
-                          opacity: cancelling[p.id] ? 0.5 : 1,
-                          lineHeight: 1.4,
+                          opacity: cancelling[p.id] ? 0.5 : 1, lineHeight: 1.4,
                         }}
                       >
                         ⏹
+                      </button>
+                    )}
+                    {isError && (
+                      <button
+                        title="Dismiss error"
+                        onClick={e => { e.stopPropagation(); dismissError(p.id); }}
+                        style={{
+                          background: 'none', border: 'none', color: 'var(--text-dim)',
+                          cursor: 'pointer', fontSize: '0.8rem', padding: '1px 4px',
+                          flexShrink: 0, lineHeight: 1,
+                        }}
+                      >
+                        ✕
                       </button>
                     )}
                   </div>
@@ -1796,17 +1885,24 @@ function ProcessPanel({ processes, onNavigate, onCancel }) {
                         {elapsed(p.started_at)}
                       </span>
                     ) : (
-                      <span style={{
-                        fontSize: '0.7rem', color: statusColor(p.status),
-                        textTransform: 'uppercase', letterSpacing: '0.3px',
-                      }}>
-                        {p.status.replace('_', ' ')}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {countdown !== null && (
+                          <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                            {countdown}s
+                          </span>
+                        )}
+                        <span style={{
+                          fontSize: '0.7rem', color: statusColor(p.status),
+                          textTransform: 'uppercase', letterSpacing: '0.3px',
+                        }}>
+                          {p.status.replace('_', ' ')}
+                        </span>
+                      </div>
                     )}
                   </div>
 
-                  {/* Error hint */}
-                  {p.status === 'error' && p.error_message && (
+                  {/* Error message */}
+                  {isError && p.error_message && (
                     <div style={{
                       paddingLeft: 14, fontSize: '0.7rem', color: 'var(--status-error)',
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
