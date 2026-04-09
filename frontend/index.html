@@ -623,7 +623,7 @@ function downloadFile(name, content) {
   URL.revokeObjectURL(url);
 }
 
-function FileModal({ file, onClose, addToast }) {
+function FileModal({ file, onClose, onSaved, addToast }) {
   const [editMode, setEditMode] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
@@ -645,6 +645,7 @@ function FileModal({ file, onClose, addToast }) {
       file.content = editContent;
       addToast('File saved', 'success');
       setEditMode(false);
+      onSaved && onSaved(file.path);
     } catch (err) {
       addToast(`Save failed: ${err.message}`, 'error');
     } finally {
@@ -746,6 +747,8 @@ function FileModal({ file, onClose, addToast }) {
 function ICMView({ stages, tokenStreams, processes, onRunStage, onRetryStage, onMarkDone, addToast, onRefreshStages }) {
   const [expanded, setExpanded] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  // Tracks paths of output files edited this session — resets on page reload
+  const [editedFiles, setEditedFiles] = useState(new Set());
   const loadStages = onRefreshStages;
 
   const toggleExpand = (stageNum) => {
@@ -811,12 +814,14 @@ function ICMView({ stages, tokenStreams, processes, onRunStage, onRetryStage, on
             onMarkDone={onMarkDone}
             onOpenFile={openFile}
             onPromote={promoteFile}
+            editedFiles={editedFiles}
             addToast={addToast}
             onRefreshStages={loadStages}
           />
         ))}
       </div>
-      <FileModal file={previewFile} onClose={() => setPreviewFile(null)} addToast={addToast} />
+      <FileModal file={previewFile} onClose={() => setPreviewFile(null)} addToast={addToast}
+        onSaved={path => setEditedFiles(prev => new Set(prev).add(path))} />
     </div>
   );
 }
@@ -1205,7 +1210,7 @@ function InputManagementPanel({ stage, onDone, addToast }) {
   );
 }
 
-function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunStage, onRetryStage, onMarkDone, onOpenFile, onPromote, addToast, onRefreshStages }) {
+function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunStage, onRetryStage, onMarkDone, onOpenFile, onPromote, editedFiles, addToast, onRefreshStages }) {
   const tokenRef = useRef(null);
   const [inputFiles, setInputFiles] = useState([]);
   const [outputFiles, setOutputFiles] = useState([]);
@@ -1392,12 +1397,23 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
               Mark as Done
             </button>
             {stage.stage_number < 6 && (
-              <button
-                onClick={() => setInputPanelOpen(o => !o)}
-                style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem' }}
-              >
-                {inputPanelOpen ? 'Close Inputs' : `Promote to Stage ${stage.stage_number + 1} →`}
-              </button>
+              <>
+                <button
+                  onClick={async () => {
+                    await onMarkDone(stage.stage_number);
+                    setInputPanelOpen(true);
+                  }}
+                  style={{ ...accentBtn, background: 'var(--accent)', padding: '6px 14px', fontSize: '0.8rem' }}
+                >
+                  Approve & Advance →
+                </button>
+                <button
+                  onClick={() => setInputPanelOpen(o => !o)}
+                  style={{ ...accentBtn, background: 'var(--bg-card-hover)', color: 'var(--text-secondary)', padding: '6px 14px', fontSize: '0.8rem' }}
+                >
+                  {inputPanelOpen ? 'Close Inputs' : `Promote to Stage ${stage.stage_number + 1} →`}
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1596,12 +1612,20 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
                 ) : outputFiles.length === 0 ? (
                   <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No output yet</p>
                 ) : outputFiles.map(f => (
-                  <button key={f.path} onClick={() => onOpenFile(f.path, f.label, true)}
-                    style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
-                      cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
-                      fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
-                    {f.label}
-                  </button>
+                  <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+                    <button onClick={() => onOpenFile(f.path, f.label, true)}
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)',
+                        cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                        fontSize: '0.8rem', padding: 0, textDecoration: 'underline' }}>
+                      {f.label}
+                    </button>
+                    {editedFiles && editedFiles.has(f.path) && (
+                      <span style={{
+                        fontSize: '0.65rem', padding: '1px 5px', borderRadius: 4,
+                        background: '#F59B2322', color: 'var(--status-review)', flexShrink: 0,
+                      }}>edited</span>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
