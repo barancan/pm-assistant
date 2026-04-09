@@ -228,6 +228,12 @@ async def get_chat_history(limit: int = 50) -> list[dict]:
             return list(reversed([dict(row) for row in rows]))
 
 
+async def clear_chat_history() -> None:
+    async with aiosqlite.connect(get_db_path()) as db:
+        await db.execute("DELETE FROM chat_messages")
+        await db.commit()
+
+
 async def save_chat_message(role: str, content: str) -> str:
     message_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
