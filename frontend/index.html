@@ -804,11 +804,19 @@ function InputManagementPanel({ stage, onDone, addToast }) {
   const dropRef = useRef(null);
   const inputRef = useRef(null);
 
-  const fetchSources = async () => {
+  const fetchSources = async (precheck = false) => {
     setLoading(true);
     try {
       const data = await API.get(`/api/icm/${stageNum}/input-sources`);
       setSources(data);
+      // On first load, pre-check all files from the primary source (previous stage / intake)
+      if (precheck) {
+        const initial = {};
+        (data.previous_stage?.files || []).forEach(f => {
+          initial[f.name] = { checked: true, source: 'previous_stage' };
+        });
+        setFileState(initial);
+      }
     } catch {
       setSources(null);
     } finally {
@@ -816,7 +824,7 @@ function InputManagementPanel({ stage, onDone, addToast }) {
     }
   };
 
-  useEffect(() => { fetchSources(); }, [stageNum]);
+  useEffect(() => { fetchSources(true); }, [stageNum]);
 
   const toggleFile = (name, source) => {
     setFileState(prev => {
@@ -854,8 +862,8 @@ function InputManagementPanel({ stage, onDone, addToast }) {
         next[savedName] = { checked: true, source: 'uploaded', uploaded: true, uploading: false, error: null };
         return next;
       });
-      // Refresh sources so "Already queued" tab picks up the new file
-      fetchSources();
+      // Refresh sources so "Already queued" tab picks up the new file (no precheck — preserve user selections)
+      fetchSources(false);
     } catch (err) {
       setFileState(prev => ({ ...prev, [name]: { checked: false, source: null, uploading: false, error: err.message } }));
     }
@@ -1247,9 +1255,9 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
         </div>
       )}
 
-      {/* Ready to advance nudge — shown when stage has output but panel is closed */}
-      {!isIntake && !needsReview && !inputPanelOpen &&
-        (stage.status === 'done') &&
+      {/* Ready to advance nudge — shown when stage has output and panel is closed (done or needs_review) */}
+      {!isIntake && !inputPanelOpen &&
+        (stage.status === 'done' || stage.status === 'needs_review') &&
         stage.output_file_count > 0 &&
         stage.stage_number < 6 && (
         <div style={{
