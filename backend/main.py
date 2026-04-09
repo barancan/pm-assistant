@@ -307,6 +307,167 @@ async def get_status():
     return await get_status_snapshot()
 
 
+# ─── Settings Endpoints ────────────────────────────────────────────────────────
+
+_ENV_LOCAL_PATH = _root / ".env.local"
+
+_SETTINGS_KEYS = {
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "linear_api_key": "LINEAR_API_KEY",
+    "ollama_host": "OLLAMA_HOST",
+    "ollama_model": "OLLAMA_MODEL",
+}
+
+_STAGE_MODEL_KEYS = {2: "STAGE_2_MODEL", 3: "STAGE_3_MODEL", 6: "STAGE_6_MODEL"}
+
+
+def _mask(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "****"
+    return "****..." + value[-4:]
+
+
+def _read_env_local() -> dict:
+    """Parse .env.local into a key→value dict."""
+    result = {}
+    if not _ENV_LOCAL_PATH.exists():
+        return result
+    for line in _ENV_LOCAL_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        result[key.strip()] = val.strip()
+    return result
+
+
+def _write_env_local(pairs: dict) -> None:
+    """Update .env.local with given key=value pairs. Only modifies listed keys."""
+    existing = _read_env_local()
+    existing.update(pairs)
+    lines = [f"{k}={v}" for k, v in existing.items() if v != ""]
+    _ENV_LOCAL_PATH.write_text("\n".join(lines) + "\n")
+
+
+@app.get("/api/settings")
+async def get_settings():
+    stage_models = {
+        str(stage): os.environ.get(env_key, os.environ.get("OLLAMA_MODEL", ""))
+        for stage, env_key in _STAGE_MODEL_KEYS.items()
+    }
+    return {
+        "anthropic_api_key": _mask(os.environ.get("ANTHROPIC_API_KEY")),
+        "linear_api_key": _mask(os.environ.get("LINEAR_API_KEY")),
+        "ollama_host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+        "ollama_model": os.environ.get("OLLAMA_MODEL", ""),
+        "stage_models": stage_models,
+    }
+
+
+class SettingsRequest(BaseModel):
+    anthropic_api_key: Optional[str] = None
+    linear_api_key: Optional[str] = None
+    ollama_host: Optional[str] = None
+    ollama_model: Optional[str] = None
+    stage_models: Optional[dict] = None  # {"2": "gemma3:4b", ...}
+
+
+@app.post("/api/settings")
+async def save_settings(req: SettingsRequest):
+    updates: dict = {}
+    field_map = {
+        "anthropic_api_key": "ANTHROPIC_API_KEY",
+        "linear_api_key": "LINEAR_API_KEY",
+        "ollama_host": "OLLAMA_HOST",
+        "ollama_model": "OLLAMA_MODEL",
+    }
+    data = req.model_dump(exclude_none=True)
+    for field, env_key in field_map.items():
+        if field in data and data[field] not in (None, ""):
+            updates[env_key] = data[field]
+            os.environ[env_key] = data[field]
+
+    if req.stage_models:
+        for stage_str, model in req.stage_models.items():
+            env_key = _STAGE_MODEL_KEYS.get(int(stage_str))
+            if env_key and model:
+                updates[env_key] = model
+                os.environ[env_key] = model
+
+    if updates:
+        _write_env_local(updates)
+
+    return await get_settings()
+
+
+@app.post("/api/settings/test/{service}")
+async def test_service(service: str):
+    if service == "anthropic":
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            return {"ok": False, "message": "ANTHROPIC_API_KEY not set"}
+        try:
+            import anthropic as _anthropic
+            client = _anthropic.AsyncAnthropic(api_key=key)
+            await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            return {"ok": True, "message": "Connected"}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:120]}
+
+    elif service == "linear":
+        key = os.environ.get("LINEAR_API_KEY")
+        if not key:
+            return {"ok": False, "message": "LINEAR_API_KEY not set"}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    "https://api.linear.app/graphql",
+                    json={"query": "{ viewer { id name } }"},
+                    headers={"Authorization": key, "Content-Type": "application/json"},
+                )
+                data = resp.json()
+                if "errors" in data:
+                    return {"ok": False, "message": data["errors"][0].get("message", "API error")}
+                name = data.get("data", {}).get("viewer", {}).get("name", "")
+                return {"ok": True, "message": f"Connected as {name}"}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:120]}
+
+    elif service == "ollama":
+        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{host}/api/tags")
+                if resp.status_code == 200:
+                    count = len(resp.json().get("models", []))
+                    return {"ok": True, "message": f"Connected — {count} model(s) available"}
+                return {"ok": False, "message": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:120]}
+
+    raise HTTPException(status_code=400, detail="Unknown service")
+
+
+@app.get("/api/settings/ollama-models")
+async def get_ollama_models():
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{host}/api/tags")
+            if resp.status_code == 200:
+                models = [m["name"] for m in resp.json().get("models", [])]
+                return {"models": models}
+    except Exception:
+        pass
+    return {"models": []}
+
+
 @app.get("/api/reports/latest")
 async def get_latest_report():
     report = await database.get_latest_report("daily_report")

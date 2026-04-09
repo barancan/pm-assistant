@@ -1862,78 +1862,247 @@ function AgentsView({ processes, onRunReport, focusedAgentId }) {
 
 // ─── Settings View ────────────────────────────────────────────────────────────
 
-function SettingsView({ ollamaStatus, claudeStatus, linearStatus }) {
+function SettingsView({ ollamaStatus, claudeStatus, linearStatus, onStatusRefresh }) {
+  const [settings, setSettings] = useState(null);
+  const [ollamaModels, setOllamaModels] = useState([]);
+  const [form, setForm] = useState({});
+  const [stageModels, setStageModels] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState(null);
+  const [testResults, setTestResults] = useState({});
+  const [testing, setTesting] = useState({});
+
+  useEffect(() => {
+    API.get('/api/settings').then(data => {
+      setSettings(data);
+      setStageModels(data.stage_models || {});
+    }).catch(() => {});
+    API.get('/api/settings/ollama-models').then(data => {
+      setOllamaModels(data.models || []);
+    }).catch(() => {});
+  }, []);
+
+  const inputStyle = {
+    width: '100%', background: 'var(--bg-base)', border: '1px solid var(--border)',
+    borderRadius: 6, padding: '8px 12px', color: 'var(--text-primary)',
+    fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box',
+  };
+  const labelStyle = { fontWeight: 600, fontSize: '0.85rem', marginBottom: 4, display: 'block' };
+  const dimStyle = { color: 'var(--text-dim)', fontSize: '0.75rem', marginTop: 3 };
+
+  const handleTest = async (service) => {
+    setTesting(p => ({ ...p, [service]: true }));
+    try {
+      const res = await API.post(`/api/settings/test/${service}`, {});
+      setTestResults(p => ({ ...p, [service]: res }));
+      if (res.ok && onStatusRefresh) onStatusRefresh();
+    } catch (e) {
+      setTestResults(p => ({ ...p, [service]: { ok: false, message: e.message } }));
+    } finally {
+      setTesting(p => ({ ...p, [service]: false }));
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true); setSaveMsg(null);
+    try {
+      const body = { stage_models: stageModels };
+      if (form.anthropic_api_key) body.anthropic_api_key = form.anthropic_api_key;
+      if (form.linear_api_key) body.linear_api_key = form.linear_api_key;
+      if (form.ollama_host) body.ollama_host = form.ollama_host;
+      if (form.ollama_model) body.ollama_model = form.ollama_model;
+      const updated = await API.post('/api/settings', body);
+      setSettings(updated);
+      setForm({});
+      setSaveMsg('Saved');
+      if (onStatusRefresh) onStatusRefresh();
+      setTimeout(() => setSaveMsg(null), 3000);
+    } catch (e) {
+      setSaveMsg(`Error: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const TestBtn = ({ service }) => {
+    const result = testResults[service];
+    return (
+      <button
+        onClick={() => handleTest(service)}
+        disabled={testing[service]}
+        style={{ ...accentBtn, background: 'var(--bg-card-hover)', color: 'var(--text-secondary)',
+          padding: '5px 12px', fontSize: '0.78rem', flexShrink: 0 }}
+      >
+        {testing[service] ? '…' : result ? (result.ok ? '✓' : '✕') : 'Test'}
+      </button>
+    );
+  };
+
+  const testResult = (service) => {
+    const r = testResults[service];
+    if (!r) return null;
+    return (
+      <span style={{ fontSize: '0.73rem', color: r.ok ? 'var(--accent)' : 'var(--status-error)' }}>
+        {r.message}
+      </span>
+    );
+  };
+
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
       <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>Settings</h1>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 600 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 620 }}>
+
+        {/* API Keys */}
         <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
-          <h3 style={{ marginBottom: 12 }}>Model Connections</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontWeight: 600 }}>Ollama (Local)</div>
-                <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>gemma4:e4b — used for discovery, opportunity, stories</div>
+          <h3 style={{ marginBottom: 16 }}>API Keys</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+            {/* Anthropic */}
+            <div>
+              <label style={labelStyle}>Anthropic API Key</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="password"
+                  placeholder={settings?.anthropic_api_key || 'sk-ant-...'}
+                  value={form.anthropic_api_key || ''}
+                  onChange={e => setForm(p => ({ ...p, anthropic_api_key: e.target.value }))}
+                  style={inputStyle}
+                />
+                <TestBtn service="anthropic" />
               </div>
-              <span style={{
-                padding: '4px 12px', borderRadius: 20, fontSize: '0.8rem',
-                background: ollamaStatus === 'connected' ? '#1DB95422' : '#E9142922',
-                color: ollamaStatus === 'connected' ? 'var(--accent)' : 'var(--status-error)',
-              }}>
-                {ollamaStatus === 'connected' ? 'Connected' : 'Disconnected'}
-              </span>
+              <div style={{ ...dimStyle, display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                <span style={{ padding: '1px 8px', borderRadius: 10, fontSize: '0.7rem',
+                  background: claudeStatus === 'configured' ? '#1DB95422' : '#53535322',
+                  color: claudeStatus === 'configured' ? 'var(--accent)' : 'var(--text-dim)' }}>
+                  {claudeStatus === 'configured' ? 'Configured' : 'Not configured'}
+                </span>
+                {testResult('anthropic')}
+              </div>
             </div>
-            <div style={{ height: 1, background: 'var(--border)' }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontWeight: 600 }}>Claude API</div>
-                <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>claude-sonnet-4-6 — used for PRD, critique, orchestration</div>
+
+            {/* Linear */}
+            <div>
+              <label style={labelStyle}>Linear API Key</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="password"
+                  placeholder={settings?.linear_api_key || 'lin_api_...'}
+                  value={form.linear_api_key || ''}
+                  onChange={e => setForm(p => ({ ...p, linear_api_key: e.target.value }))}
+                  style={inputStyle}
+                />
+                <TestBtn service="linear" />
               </div>
-              <span style={{
-                padding: '4px 12px', borderRadius: 20, fontSize: '0.8rem',
-                background: claudeStatus === 'configured' ? '#1DB95422' : '#53535322',
-                color: claudeStatus === 'configured' ? 'var(--accent)' : 'var(--text-dim)',
-              }}>
-                {claudeStatus === 'configured' ? 'Configured' : 'Not configured'}
-              </span>
+              <div style={{ ...dimStyle, display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                <span style={{ padding: '1px 8px', borderRadius: 10, fontSize: '0.7rem',
+                  background: linearStatus === 'configured' ? '#1DB95422' : '#E9142922',
+                  color: linearStatus === 'configured' ? 'var(--accent)' : 'var(--status-error)' }}>
+                  {linearStatus === 'configured' ? 'Configured' : 'Not configured'}
+                </span>
+                {testResult('linear')}
+              </div>
             </div>
-            <div style={{ height: 1, background: 'var(--border)' }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontWeight: 600 }}>Linear</div>
-                <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>LINEAR_API_KEY — required for daily report</div>
+
+          </div>
+        </div>
+
+        {/* Ollama */}
+        <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
+          <h3 style={{ marginBottom: 16 }}>Ollama</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <label style={labelStyle}>Host</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="text"
+                  placeholder={settings?.ollama_host || 'http://localhost:11434'}
+                  value={form.ollama_host || ''}
+                  onChange={e => setForm(p => ({ ...p, ollama_host: e.target.value }))}
+                  style={inputStyle}
+                />
+                <TestBtn service="ollama" />
               </div>
-              <span style={{
-                padding: '4px 12px', borderRadius: 20, fontSize: '0.8rem',
-                background: linearStatus === 'configured' ? '#1DB95422' : '#E9142922',
-                color: linearStatus === 'configured' ? 'var(--accent)' : 'var(--status-error)',
-              }}>
-                {linearStatus === 'configured' ? 'Configured' : 'Not configured'}
-              </span>
+              <div style={{ ...dimStyle, display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                <span style={{ padding: '1px 8px', borderRadius: 10, fontSize: '0.7rem',
+                  background: ollamaStatus === 'connected' ? '#1DB95422' : '#E9142922',
+                  color: ollamaStatus === 'connected' ? 'var(--accent)' : 'var(--status-error)' }}>
+                  {ollamaStatus === 'connected' ? 'Connected' : 'Disconnected'}
+                </span>
+                {testResult('ollama')}
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>Default Model</label>
+              {ollamaModels.length > 0 ? (
+                <select
+                  value={form.ollama_model || settings?.ollama_model || ''}
+                  onChange={e => setForm(p => ({ ...p, ollama_model: e.target.value }))}
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                >
+                  {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder={settings?.ollama_model || 'gemma3:4b'}
+                  value={form.ollama_model || ''}
+                  onChange={e => setForm(p => ({ ...p, ollama_model: e.target.value }))}
+                  style={inputStyle}
+                />
+              )}
             </div>
           </div>
         </div>
 
+        {/* Stage Models (US-20) */}
         <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
-          <h3 style={{ marginBottom: 12 }}>Configuration</h3>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.6 }}>
-            Edit <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4, fontFamily: 'monospace' }}>.env.local</code> in the project root to configure API keys and settings.
+          <h3 style={{ marginBottom: 4 }}>Stage Models</h3>
+          <p style={{ color: 'var(--text-dim)', fontSize: '0.78rem', marginBottom: 14 }}>
+            Stages 4 & 5 always use Claude. Choose which Ollama model runs stages 2, 3, and 6.
           </p>
-          <div style={{ marginTop: 12, fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-dim)', lineHeight: 2 }}>
-            <div>ANTHROPIC_API_KEY=...</div>
-            <div>LINEAR_API_KEY=...</div>
-            <div>OLLAMA_HOST=http://localhost:11434</div>
-            <div>OLLAMA_MODEL=gemma4:e4b</div>
-            <div>LINEAR_MCP_URL=https://mcp.linear.app/mcp</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[{n:2,name:'Discovery'},{n:3,name:'Opportunity'},{n:6,name:'Stories'}].map(({n, name}) => (
+              <div key={n} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Stage {n} · {name}</span>
+                {ollamaModels.length > 0 ? (
+                  <select
+                    value={stageModels[String(n)] || settings?.ollama_model || ''}
+                    onChange={e => setStageModels(p => ({ ...p, [String(n)]: e.target.value }))}
+                    style={{ ...inputStyle, width: 'auto', minWidth: 160, cursor: 'pointer' }}
+                  >
+                    {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    placeholder={settings?.ollama_model || 'gemma3:4b'}
+                    value={stageModels[String(n)] || ''}
+                    onChange={e => setStageModels(p => ({ ...p, [String(n)]: e.target.value }))}
+                    style={{ ...inputStyle, width: 180 }}
+                  />
+                )}
+              </div>
+            ))}
           </div>
         </div>
 
-        <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 20, border: '1px solid var(--border)' }}>
-          <h3 style={{ marginBottom: 12 }}>ICM Pipeline</h3>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.6 }}>
-            To run a stage, add <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4 }}>.md</code> files to the stage's <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4 }}>input/</code> folder, then click Run Stage. Outputs accumulate in <code style={{ background: 'var(--bg-base)', padding: '2px 6px', borderRadius: 4 }}>output/</code> — they are never deleted.
-          </p>
+        {/* Save bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{ ...accentBtn, padding: '9px 24px', opacity: saving ? 0.6 : 1, cursor: saving ? 'not-allowed' : 'pointer' }}
+          >
+            {saving ? 'Saving…' : 'Save Settings'}
+          </button>
+          {saveMsg && (
+            <span style={{ fontSize: '0.82rem', color: saveMsg.startsWith('Error') ? 'var(--status-error)' : 'var(--accent)' }}>
+              {saveMsg}
+            </span>
+          )}
         </div>
+
       </div>
     </div>
   );
@@ -2670,7 +2839,7 @@ function App() {
       case 'agents':
         return <AgentsView processes={processes} onRunReport={runReport} focusedAgentId={focusedAgentId} />;
       case 'settings':
-        return <SettingsView ollamaStatus={ollamaStatus} claudeStatus={claudeStatus} linearStatus={linearStatus} />;
+        return <SettingsView ollamaStatus={ollamaStatus} claudeStatus={claudeStatus} linearStatus={linearStatus} onStatusRefresh={loadStatus} />;
       default:
         return null;
     }
