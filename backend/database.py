@@ -103,6 +103,19 @@ async def init_db() -> None:
                 (stage_number, stage_name),
             )
 
+        # On startup, any process still marked 'running' is an orphan from a
+        # previous server instance. Mark them cancelled so the UI is consistent.
+        await db.execute(
+            """
+            UPDATE processes
+            SET status = 'cancelled',
+                completed_at = ?,
+                error_message = 'Server restarted — process was orphaned'
+            WHERE status = 'running'
+            """,
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+
         await db.commit()
 
 

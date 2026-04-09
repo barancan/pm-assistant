@@ -177,14 +177,21 @@ To run a stage: add `.md` files to its `input/` folder, then click **Run Stage**
 
 ## Security
 
-- Agents can only write to their designated `output/` folder
-- `CLAUDE.md`, `CONTEXT.md`, `_core/`, and `_config/` are read-only to all agents
-- External content goes to `01_intake/quarantine/` — never auto-promoted to `trusted/`
-- No credentials are ever written to the workspace
+### Agent security model
 
-### Locking workspace files (recommended)
+The primary security boundary is **code, not filesystem permissions**. Every agent inherits from `BaseAgent`, which enforces three checks on every write:
 
-Run these from inside your `pm-assistant/` directory:
+1. Path must resolve inside `WORKSPACE` (no `../` escape)
+2. Path must not match `READONLY_PATTERNS` (`CLAUDE.md`, `CONTEXT.md`, `_core/`, `_config/`)
+3. Path must match both `WRITABLE_PATTERNS` (global allow-list) and `AGENT_ALLOWED_WRITES` (per-agent allow-list — e.g. the Discovery agent can only write to `02_discovery/output/`)
+
+This means agents are prevented from writing to input directories, configuration files, or files belonging to other stages regardless of filesystem permissions.
+
+The server itself (`main.py`) runs as the local user and has full filesystem access by design. When you explicitly promote a file or upload via the UI, the server writes to the target input directory directly — this is an intentional user action, not agent behaviour.
+
+### Optional: lock configuration files
+
+You can add a second layer of protection for orientation and configuration files that should never change during normal operation:
 
 ```bash
 # Lock the root orientation file
@@ -200,25 +207,9 @@ chmod 444 workspace/03_opportunity/CONTEXT.md
 chmod 444 workspace/04_prd/CONTEXT.md
 chmod 444 workspace/05_critique/CONTEXT.md
 chmod 444 workspace/06_stories/CONTEXT.md
-
-# Stage input folders — agents cannot write here
-chmod 555 workspace/02_discovery/input
-chmod 555 workspace/03_opportunity/input
-chmod 555 workspace/04_prd/input
-chmod 555 workspace/05_critique/input
-chmod 555 workspace/06_stories/input
-
-# Stage output folders — agents write here
-chmod 755 workspace/02_discovery/output
-chmod 755 workspace/03_opportunity/output
-chmod 755 workspace/04_prd/output
-chmod 755 workspace/05_critique/output
-chmod 755 workspace/06_stories/output
-
-# Intake folders
-chmod 755 workspace/01_intake/quarantine
-chmod 755 workspace/01_intake/trusted
 ```
+
+Note: **do not chmod 555 the input directories**. The server needs to write to input dirs when you promote files through the UI.
 
 Then verify:
 

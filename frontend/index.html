@@ -138,6 +138,7 @@ function statusColor(status) {
     error: 'var(--status-error)',
     done: 'var(--status-done)',
     idle: 'var(--status-idle)',
+    cancelled: 'var(--text-dim)',
   };
   return map[status] || 'var(--text-dim)';
 }
@@ -493,9 +494,10 @@ function FileModal({ file, onClose, addToast }) {
 
 // ─── ICM Pipeline View ────────────────────────────────────────────────────────
 
-function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
+function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast, onRefreshStages }) {
   const [expanded, setExpanded] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const loadStages = onRefreshStages;
 
   const toggleExpand = (stageNum) => {
     setExpanded(prev => prev === stageNum ? null : stageNum);
@@ -539,6 +541,8 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
             onMarkDone={onMarkDone}
             onOpenFile={openFile}
             onPromote={promoteFile}
+            addToast={addToast}
+            onRefreshStages={loadStages}
           />
         ))}
       </div>
@@ -547,11 +551,388 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast }) {
   );
 }
 
-function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile, onPromote }) {
+// ─── Intake Promote Panel (stage 1 → stage 2) ─────────────────────────────────
+
+function IntakePromotePanel({ onDone, addToast }) {
+  const [files, setFiles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [fileState, setFileState] = useState({});
+  const [promoting, setPromoting] = useState(false);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    const fetch_ = async () => {
+      setLoading(true);
+      try {
+        const data = await API.get('/api/icm/1/output-files');
+        setFiles(data.files || []);
+        const init = {};
+        (data.files || []).forEach(f => { init[f.name] = false; });
+        setFileState(init);
+      } catch { setFiles([]); } finally { setLoading(false); }
+    };
+    fetch_();
+  }, []);
+
+  const toggle = (name) => setFileState(prev => ({ ...prev, [name]: !prev[name] }));
+  const selected = Object.keys(fileState).filter(n => fileState[n]);
+  const canPromote = selected.length > 0 && !promoting;
+  const formatBytes = (b) => b < 1024 ? `${b}B` : b < 1048576 ? `${(b/1024).toFixed(1)}KB` : `${(b/1048576).toFixed(1)}MB`;
+
+  const handlePromote = async () => {
+    setPromoting(true);
+    try {
+      await API.post('/api/icm/promote/1', { selected_files: selected, source: 'previous_stage' });
+      setDone(true);
+      addToast(`${selected.length} file(s) sent to Discovery input`, 'success');
+      setTimeout(() => onDone(), 2000);
+    } catch (err) {
+      addToast(`Failed: ${err.message}`, 'error');
+      setPromoting(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div style={{ background: '#1a1a1a', borderTop: '1px solid var(--border)', padding: '16px 20px' }}>
+        <span style={{ color: 'var(--accent)', fontSize: '0.9rem' }}>✓ Files sent to Discovery input</span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#1a1a1a', borderTop: '1px solid var(--border)' }}>
+      <div style={{ padding: '14px 20px 0' }}>
+        <h4 style={{ color: 'var(--text-secondary)', fontSize: '0.8rem',
+          textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10 }}>
+          Send to Discovery — select trusted files
+        </h4>
+        {loading ? (
+          <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+        ) : files.length === 0 ? (
+          <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No trusted files yet.</p>
+        ) : files.map(f => (
+          <label key={f.name}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px',
+              borderRadius: 6, cursor: 'pointer', marginBottom: 2,
+              background: fileState[f.name] ? '#1DB95411' : 'transparent', transition: 'background 0.1s' }}
+            onMouseEnter={e => { if (!fileState[f.name]) e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
+            onMouseLeave={e => { if (!fileState[f.name]) e.currentTarget.style.background = 'transparent'; }}
+          >
+            <input type="checkbox" checked={!!fileState[f.name]} onChange={() => toggle(f.name)}
+              style={{ accentColor: 'var(--accent)', flexShrink: 0 }} />
+            <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--text-primary)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+            {f.size_bytes != null && (
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', flexShrink: 0 }}>{formatBytes(f.size_bytes)}</span>
+            )}
+            {f.modified_at && (
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', flexShrink: 0 }}>{formatTime(f.modified_at)}</span>
+            )}
+          </label>
+        ))}
+      </div>
+      <div style={{ padding: '12px 20px 16px', display: 'flex',
+        justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span style={{ color: 'var(--text-dim)', fontSize: '0.82rem' }}>
+          {selected.length > 0 ? `${selected.length} file(s) → Discovery input` : 'Select files to send to Discovery'}
+        </span>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <button onClick={onDone}
+            style={{ ...accentBtn, background: 'var(--text-dim)', padding: '6px 14px', fontSize: '0.8rem' }}>
+            Cancel
+          </button>
+          <button onClick={handlePromote} disabled={!canPromote}
+            style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem',
+              background: canPromote ? 'var(--accent)' : 'var(--text-dim)',
+              cursor: canPromote ? 'pointer' : 'not-allowed' }}>
+            {promoting ? 'Sending…' : 'Send to Discovery →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Input Management Panel ────────────────────────────────────────────────────
+
+function InputManagementPanel({ stage, onDone, addToast }) {
+  const stageNum = stage.stage_number;
+  const nextStage = stageNum + 1;
+  const nextNames = { 3: 'opportunity', 4: 'prd', 5: 'critique', 6: 'stories' };
+  const nextName = nextNames[nextStage] || '';
+
+  // activeTab: 'previous' | 'intake' | 'queued' | 'upload'
+  const [activeTab, setActiveTab] = useState('previous');
+  const [sources, setSources] = useState(null);
+  const [loading, setLoading] = useState(true);
+  // Map of filename → { checked, source, uploaded, uploading, error }
+  // source: 'previous_stage' | 'intake_trusted'
+  const [fileState, setFileState] = useState({});
+  const [adding, setAdding] = useState(false);
+  const [done, setDone] = useState(false);
+  const dropRef = useRef(null);
+  const inputRef = useRef(null);
+
+  const fetchSources = async () => {
+    setLoading(true);
+    try {
+      const data = await API.get(`/api/icm/${stageNum}/input-sources`);
+      setSources(data);
+    } catch {
+      setSources(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchSources(); }, [stageNum]);
+
+  const toggleFile = (name, source) => {
+    setFileState(prev => {
+      const cur = prev[name];
+      if (cur?.checked) {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      }
+      return { ...prev, [name]: { checked: true, source } };
+    });
+  };
+
+  const uploadFile = async (file) => {
+    const name = file.name;
+    const ext = name.split('.').pop().toLowerCase();
+    if (!['md', 'txt', 'jpg', 'jpeg', 'png'].includes(ext)) {
+      addToast(`Only .md, .txt, .jpeg, .jpg, .png files accepted`, 'error');
+      return;
+    }
+    setFileState(prev => ({ ...prev, [name]: { checked: false, source: null, uploading: true, error: null } }));
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const r = await fetch(`/api/icm/${stageNum}/upload`, { method: 'POST', body: form });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        throw new Error(err.detail || r.statusText);
+      }
+      const data = await r.json();
+      const savedName = data.saved_as;
+      setFileState(prev => {
+        const next = { ...prev };
+        delete next[name];
+        next[savedName] = { checked: true, source: 'uploaded', uploaded: true, uploading: false, error: null };
+        return next;
+      });
+      // Refresh sources so "Already queued" tab picks up the new file
+      fetchSources();
+    } catch (err) {
+      setFileState(prev => ({ ...prev, [name]: { checked: false, source: null, uploading: false, error: err.message } }));
+    }
+  };
+
+  const handleFiles = (files) => { Array.from(files).forEach(uploadFile); };
+  const handleDrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
+
+  const formatBytes = (b) => b < 1024 ? `${b}B` : b < 1048576 ? `${(b/1024).toFixed(1)}KB` : `${(b/1048576).toFixed(1)}MB`;
+
+  // Selected files that came from a promotable source (not uploaded, not uploading)
+  const promotable = Object.entries(fileState).filter(([, s]) => s.checked && s.source && s.source !== 'uploaded' && !s.uploading);
+  const canAdd = promotable.length > 0 && !adding;
+
+  const handleAdd = async () => {
+    setAdding(true);
+    // Group by source
+    const bySource = {};
+    promotable.forEach(([name, s]) => {
+      const src = s.source;
+      if (!bySource[src]) bySource[src] = [];
+      bySource[src].push(name);
+    });
+    try {
+      for (const [source, files] of Object.entries(bySource)) {
+        await API.post(`/api/icm/promote/${stageNum}`, { selected_files: files, source });
+      }
+      setDone(true);
+      addToast(`${promotable.length} file(s) added to Stage ${nextStage} input`, 'success');
+      setTimeout(() => onDone(), 2000);
+    } catch (err) {
+      addToast(`Failed: ${err.message}`, 'error');
+      setAdding(false);
+    }
+  };
+
+  const selectedCount = Object.values(fileState).filter(s => s.checked && !s.uploading).length;
+
+  // Tab config — hide "Intake / Trusted" tab for stage 2 since it's same as "Previous Stage"
+  const showIntakeTab = stageNum !== 2;
+
+  const tabStyle = (tab) => ({
+    padding: '6px 14px', fontSize: '0.78rem', border: 'none', borderRadius: 6, cursor: 'pointer',
+    fontWeight: activeTab === tab ? 600 : 400,
+    background: activeTab === tab ? 'var(--accent)' : 'var(--bg-card-hover)',
+    color: activeTab === tab ? '#000' : 'var(--text-secondary)',
+  });
+
+  const renderFileRow = (f, source, readonly = false) => {
+    const state = fileState[f.name] || {};
+    const isChecked = !!state.checked;
+    return (
+      <label key={f.name}
+        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px',
+          borderRadius: 6, cursor: readonly ? 'default' : 'pointer', marginBottom: 2,
+          background: isChecked ? '#1DB95411' : 'transparent', transition: 'background 0.1s' }}
+        onMouseEnter={e => { if (!readonly && !isChecked) e.currentTarget.style.background = 'var(--bg-card-hover)'; }}
+        onMouseLeave={e => { if (!readonly && !isChecked) e.currentTarget.style.background = 'transparent'; }}
+      >
+        {!readonly && (
+          <input type="checkbox" checked={isChecked} onChange={() => toggleFile(f.name, source)}
+            style={{ accentColor: 'var(--accent)', flexShrink: 0 }} />
+        )}
+        {readonly && <span style={{ width: 14, flexShrink: 0 }} />}
+        <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.82rem',
+          color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {f.name}
+        </span>
+        {f.size_bytes != null && (
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', flexShrink: 0 }}>
+            {formatBytes(f.size_bytes)}
+          </span>
+        )}
+        {f.modified_at && (
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', flexShrink: 0 }}>
+            {formatTime(f.modified_at)}
+          </span>
+        )}
+      </label>
+    );
+  };
+
+  if (done) {
+    return (
+      <div style={{ background: '#1a1a1a', borderTop: '1px solid var(--border)', padding: '16px 20px' }}>
+        <span style={{ color: 'var(--accent)', fontSize: '0.9rem' }}>
+          ✓ {promotable.length} file(s) added to Stage {nextStage} — {nextName} input
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#1a1a1a', borderTop: '1px solid var(--border)' }}>
+      {/* Tab bar */}
+      <div style={{ padding: '14px 20px 0', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button style={tabStyle('previous')} onClick={() => setActiveTab('previous')}>
+          {stageNum === 2 ? 'Intake / Trusted' : `Stage ${stageNum - 1} Output`}
+        </button>
+        {showIntakeTab && (
+          <button style={tabStyle('intake')} onClick={() => setActiveTab('intake')}>Intake / Trusted</button>
+        )}
+        <button style={tabStyle('queued')} onClick={() => setActiveTab('queued')}>Already Queued</button>
+        <button style={tabStyle('upload')} onClick={() => setActiveTab('upload')}>Upload</button>
+      </div>
+
+      {/* Tab content */}
+      <div style={{ padding: '12px 20px 0', minHeight: 80 }}>
+        {loading ? (
+          <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
+        ) : !sources ? (
+          <div style={{ color: 'var(--status-error)', fontSize: '0.8rem' }}>Could not load sources.</div>
+        ) : activeTab === 'previous' ? (() => {
+          const files = sources.previous_stage?.files || [];
+          const prevName = sources.previous_stage?.stage_name || '';
+          return files.length === 0 ? (
+            <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+              No files in {prevName} output yet.
+            </p>
+          ) : files.map(f => renderFileRow(f, 'previous_stage'));
+        })() : activeTab === 'intake' ? (() => {
+          const files = sources.intake_trusted?.files || [];
+          return files.length === 0 ? (
+            <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+              No files in intake / trusted yet.
+            </p>
+          ) : files.map(f => renderFileRow(f, 'intake_trusted'));
+        })() : activeTab === 'queued' ? (() => {
+          const files = sources.current_input?.files || [];
+          return files.length === 0 ? (
+            <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+              No files queued in this stage's input yet.
+            </p>
+          ) : files.map(f => renderFileRow(f, null, true));
+        })() : (
+          /* Upload tab */
+          <div>
+            <div
+              ref={dropRef}
+              onClick={() => inputRef.current?.click()}
+              onDragOver={e => { e.preventDefault(); dropRef.current.style.borderColor = 'var(--accent)'; dropRef.current.style.background = '#1DB95408'; }}
+              onDragLeave={() => { dropRef.current.style.borderColor = 'var(--text-dim)'; dropRef.current.style.background = 'transparent'; }}
+              onDrop={handleDrop}
+              style={{ border: '1px dashed var(--text-dim)', borderRadius: 8,
+                padding: '18px 16px', textAlign: 'center', cursor: 'pointer',
+                transition: 'border-color 0.15s, background 0.15s' }}
+            >
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 4 }}>
+                Drop files here or click to browse
+              </div>
+              <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
+                Uploaded directly to Stage {stageNum} input (.md, .txt, .jpg, .jpeg, .png)
+              </div>
+              <input ref={inputRef} type="file" multiple accept=".md,.txt,.jpg,.jpeg,.png"
+                style={{ display: 'none' }} onChange={e => { handleFiles(e.target.files); e.target.value = ''; }} />
+            </div>
+            {/* Uploading / errored rows */}
+            {Object.entries(fileState).filter(([, s]) => s.uploading || s.error).map(([name, state]) => (
+              <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 10,
+                padding: '7px 8px', marginTop: 4 }}>
+                {state.uploading
+                  ? <span className="spinner" />
+                  : <span style={{ color: 'var(--status-error)', fontSize: '0.9rem' }}>✕</span>}
+                <span style={{ fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--text-dim)',
+                  flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {name}
+                </span>
+                {state.error && (
+                  <span style={{ fontSize: '0.72rem', color: 'var(--status-error)' }}>{state.error}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Confirm bar */}
+      <div style={{ padding: '12px 20px 16px', display: 'flex',
+        justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span style={{ color: 'var(--text-dim)', fontSize: '0.82rem' }}>
+          {selectedCount > 0
+            ? `${selectedCount} file(s) selected → Stage ${nextStage} input`
+            : `Select files to add to Stage ${nextStage} — ${nextName}`}
+        </span>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <button onClick={onDone}
+            style={{ ...accentBtn, background: 'var(--text-dim)', padding: '6px 14px', fontSize: '0.8rem' }}>
+            Close
+          </button>
+          <button onClick={handleAdd} disabled={!canAdd}
+            style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem',
+              background: canAdd ? 'var(--accent)' : 'var(--text-dim)',
+              cursor: canAdd ? 'pointer' : 'not-allowed' }}>
+            {adding ? 'Adding…' : 'Add Selected'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile, onPromote, addToast, onRefreshStages }) {
   const tokenRef = useRef(null);
   const [inputFiles, setInputFiles] = useState([]);
   const [outputFiles, setOutputFiles] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [inputPanelOpen, setInputPanelOpen] = useState(false);
 
   useEffect(() => {
     if (tokenRef.current && tokenStream) {
@@ -644,6 +1025,18 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
             Run Stage
           </button>
         )}
+        {!isIntake && stage.stage_number < 6 && (
+          <button
+            disabled={isRunning}
+            onClick={e => { e.stopPropagation(); setInputPanelOpen(o => !o); }}
+            style={{ ...accentBtn, background: inputPanelOpen ? 'var(--accent)' : 'var(--bg-card-hover)',
+              color: inputPanelOpen ? '#000' : 'var(--text-secondary)',
+              padding: '6px 14px', fontSize: '0.8rem',
+              opacity: isRunning ? 0.4 : 1, cursor: isRunning ? 'not-allowed' : 'pointer' }}
+          >
+            {inputPanelOpen ? 'Close Inputs' : 'Manage Inputs'}
+          </button>
+        )}
         <span style={{ color: 'var(--text-dim)', fontSize: '0.9rem' }}>
           {expanded ? '▲' : '▼'}
         </span>
@@ -653,18 +1046,51 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
       {needsReview && (
         <div style={{
           background: '#F59B2322', borderTop: '1px solid #F59B2344',
-          padding: '10px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '10px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
         }}>
           <span style={{ color: 'var(--status-review)', fontSize: '0.85rem' }}>
             ⚠ Output ready for review. Review before advancing.
           </span>
-          <button
-            onClick={() => onMarkDone(stage.stage_number)}
-            style={{ ...accentBtn, background: 'var(--status-review)', padding: '6px 14px', fontSize: '0.8rem' }}
-          >
-            Mark as Done
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={() => onMarkDone(stage.stage_number)}
+              style={{ ...accentBtn, background: 'var(--status-review)', padding: '6px 14px', fontSize: '0.8rem' }}
+            >
+              Mark as Done
+            </button>
+            {stage.stage_number < 6 && (
+              <button
+                onClick={() => setInputPanelOpen(o => !o)}
+                style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem' }}
+              >
+                {inputPanelOpen ? 'Close Inputs' : `Promote to Stage ${stage.stage_number + 1} →`}
+              </button>
+            )}
+          </div>
         </div>
+      )}
+
+      {/* Input management panel — below review banner, available for any non-intake stage (2-5) */}
+      {inputPanelOpen && !isIntake && stage.stage_number < 6 && (
+        <InputManagementPanel
+          stage={stage}
+          addToast={addToast}
+          onDone={() => {
+            setInputPanelOpen(false);
+            onRefreshStages && onRefreshStages();
+          }}
+        />
+      )}
+
+      {/* Intake promote panel — "Send to Discovery" from trusted files */}
+      {inputPanelOpen && isIntake && (
+        <IntakePromotePanel
+          addToast={addToast}
+          onDone={() => {
+            setInputPanelOpen(false);
+            onRefreshStages && onRefreshStages();
+          }}
+        />
       )}
 
       {/* Token stream when running */}
@@ -724,10 +1150,19 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
 
               {/* Right: trusted */}
               <div>
-                <h4 style={{ color: 'var(--accent)', fontSize: '0.8rem', marginBottom: 8,
-                  textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Trusted — Ready for Discovery
-                </h4>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <h4 style={{ color: 'var(--accent)', fontSize: '0.8rem',
+                    textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Trusted — Ready for Discovery
+                  </h4>
+                  {outputFiles.length > 0 && (
+                    <button
+                      onClick={() => setInputPanelOpen(o => !o)}
+                      style={{ ...accentBtn, padding: '3px 10px', fontSize: '0.75rem' }}>
+                      {inputPanelOpen ? 'Cancel' : 'Send to Discovery →'}
+                    </button>
+                  )}
+                </div>
                 {filesLoading ? (
                   <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</div>
                 ) : outputFiles.length === 0 ? (
@@ -1153,9 +1588,10 @@ function processTypeToAgentId(type) {
   return map[type] || null;
 }
 
-function ProcessPanel({ processes, onNavigate }) {
+function ProcessPanel({ processes, onNavigate, onCancel }) {
   const [open, setOpen] = useState(true);
   const [tick, setTick] = useState(0);
+  const [cancelling, setCancelling] = useState({});
 
   // Re-render every second so elapsed timers update
   useEffect(() => {
@@ -1231,7 +1667,7 @@ function ProcessPanel({ processes, onNavigate }) {
                   onMouseEnter={e => { if (clickable) e.currentTarget.style.background = 'var(--bg-card)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
-                  {/* Name + spinner/dot */}
+                  {/* Name + spinner/dot + kill button */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                     {isRunning
                       ? <span className="spinner" />
@@ -1247,6 +1683,29 @@ function ProcessPanel({ processes, onNavigate }) {
                     }}>
                       {p.name}
                     </span>
+                    {isRunning && (
+                      <button
+                        title="Kill process"
+                        disabled={!!cancelling[p.id]}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setCancelling(prev => ({ ...prev, [p.id]: true }));
+                          onCancel(p.id).finally(() =>
+                            setCancelling(prev => ({ ...prev, [p.id]: false }))
+                          );
+                        }}
+                        style={{
+                          background: 'none', border: '1px solid var(--status-error)',
+                          borderRadius: 4, color: 'var(--status-error)',
+                          cursor: cancelling[p.id] ? 'not-allowed' : 'pointer',
+                          fontSize: '0.7rem', padding: '1px 5px', flexShrink: 0,
+                          opacity: cancelling[p.id] ? 0.5 : 1,
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        ⏹
+                      </button>
+                    )}
                   </div>
 
                   {/* Time info */}
@@ -1485,9 +1944,8 @@ function App() {
   }
 
   async function markStageDone(stageNumber) {
-    // Update ICM stage status to done via chat command
     try {
-      await API.post('/api/chat', { message: `Mark stage ${stageNumber} as done` });
+      await API.post(`/api/icm/stages/${stageNumber}/done`, {});
       await loadStatus();
       addToast('Stage marked as done', 'success');
     } catch (err) {
@@ -1518,7 +1976,7 @@ function App() {
       case 'report':
         return <ReportView report={report} loading={reportLoading} onRunReport={runReport} />;
       case 'icm':
-        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} />;
+        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
       case 'agents':
         return <AgentsView processes={processes} onRunReport={runReport} focusedAgentId={focusedAgentId} />;
       case 'settings':
@@ -1548,11 +2006,20 @@ function App() {
             <ProcessPanel
               processes={processes}
               onNavigate={(agentId) => {
-                setFocusedAgentId(null);           // reset first so useEffect fires even on re-click
+                setFocusedAgentId(null);
                 setTimeout(() => {
                   setActiveView('agents');
                   setFocusedAgentId(agentId);
                 }, 0);
+              }}
+              onCancel={async (processId) => {
+                try {
+                  await API.post(`/api/processes/${processId}/cancel`, {});
+                  addToast('Process cancelled', 'info');
+                  await loadStatus();
+                } catch (err) {
+                  addToast(`Could not cancel: ${err.message}`, 'error');
+                }
               }}
             />
           </div>
