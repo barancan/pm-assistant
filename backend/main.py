@@ -313,6 +313,20 @@ async def get_latest_report():
     return {"report": report}
 
 
+@app.get("/api/reports/history")
+async def get_report_history(type: str = "daily_report", limit: int = 20):
+    history = await database.get_report_history(type, limit)
+    return {"reports": history}
+
+
+@app.get("/api/reports/{report_id}")
+async def get_report_by_id(report_id: str):
+    report = await database.get_report_by_id(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {"report": report}
+
+
 def _count_files(directory: Path) -> int:
     """Count non-hidden, non-gitkeep files in a directory (any extension)."""
     if not directory.is_dir():

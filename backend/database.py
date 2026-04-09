@@ -175,6 +175,34 @@ async def get_latest_report(report_type: str) -> Optional[dict]:
             return result
 
 
+async def get_report_history(report_type: str, limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(get_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, type, created_at FROM reports WHERE type = ? ORDER BY created_at DESC LIMIT ?",
+            (report_type, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def get_report_by_id(report_id: str) -> Optional[dict]:
+    import json
+
+    async with aiosqlite.connect(get_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM reports WHERE id = ?",
+            (report_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            result["content"] = json.loads(result["content_json"])
+            return result
+
+
 async def save_report(report_type: str, content_dict: dict) -> str:
     import json
 

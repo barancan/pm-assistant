@@ -355,12 +355,49 @@ function StatusDot({ label, status }) {
 
 // ─── Daily Report View ────────────────────────────────────────────────────────
 
-function ReportView({ report, loading, onRunReport, onSendToDiscovery }) {
+function ReportView({ report, loading, onRunReport, onSendToDiscovery, linearStatus, onNavigate }) {
   const [sent, setSent] = useState(false);
   const [sending, setSending] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyList, setHistoryList] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [viewingReport, setViewingReport] = useState(null); // { id, content, created_at }
+  const [viewingLoading, setViewingLoading] = useState(false);
 
   // Reset sent state when a new report is loaded
   useEffect(() => { setSent(false); }, [report?.id]);
+
+  const loadHistory = async () => {
+    if (historyList !== null) return; // already loaded
+    setHistoryLoading(true);
+    try {
+      const data = await API.get('/api/reports/history?type=daily_report&limit=20');
+      setHistoryList(data.reports || []);
+    } catch {
+      setHistoryList([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const toggleHistory = () => {
+    const next = !historyOpen;
+    setHistoryOpen(next);
+    if (next) loadHistory();
+  };
+
+  const loadHistoricReport = async (id) => {
+    setViewingLoading(true);
+    setViewingReport(null);
+    try {
+      const data = await API.get(`/api/reports/${id}`);
+      setViewingReport(data.report);
+    } catch {
+      setViewingReport(null);
+    } finally {
+      setViewingLoading(false);
+    }
+  };
 
   const handleSend = async () => {
     setSending(true);
@@ -385,81 +422,178 @@ function ReportView({ report, loading, onRunReport, onSendToDiscovery }) {
     );
   }
 
+  const linearMissing = linearStatus && linearStatus !== 'configured';
+
   if (!report) {
     return (
       <div style={{ padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
         <div style={{ fontSize: '3rem', marginBottom: 16 }}>◈</div>
         <h2 style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>No report yet</h2>
         <p style={{ color: 'var(--text-dim)', marginBottom: 24, textAlign: 'center', maxWidth: 360 }}>
-          Click 'Run Report' to fetch your Linear status and generate today's brief.
+          {linearMissing
+            ? 'A Linear API key is required to generate your daily brief.'
+            : "Click 'Run Report' to fetch your Linear status and generate today's brief."}
         </p>
-        <button onClick={onRunReport} style={accentBtn}>Run Report</button>
+        {linearMissing ? (
+          <button onClick={() => onNavigate && onNavigate('settings')} style={{ ...accentBtn, background: 'var(--status-error)' }}>
+            Configure Linear →
+          </button>
+        ) : (
+          <button onClick={onRunReport} style={accentBtn}>Run Report</button>
+        )}
       </div>
     );
   }
 
-  const content = report.content || {};
-  const markdown = content.report_markdown || '';
-  const generatedAt = content.generated_at;
+  const generatedAt = report.content?.generated_at;
 
-  // Split the markdown into sections
-  const sections = [];
-  const sectionTitles = ['Today\'s Priorities', 'Blocked Items', 'Momentum', 'Recommended Actions'];
-  let remaining = markdown;
+  // Determine what to render: live report or a historic one
+  const displayReport = viewingReport || report;
+  const displayContent = displayReport?.content || {};
+  const displayMarkdown = displayContent.report_markdown || '';
+  const displayGeneratedAt = displayContent.generated_at || displayReport?.created_at;
 
-  sectionTitles.forEach(title => {
-    const idx = remaining.indexOf(`## ${title}`);
+  const displaySections = [];
+  const sectionTitles2 = ['Today\'s Priorities', 'Blocked Items', 'Momentum', 'Recommended Actions'];
+  let remaining2 = displayMarkdown;
+  sectionTitles2.forEach(title => {
+    const idx = remaining2.indexOf(`## ${title}`);
     if (idx !== -1) {
-      const end = remaining.indexOf('\n## ', idx + 1);
-      const sectionContent = end !== -1
-        ? remaining.slice(idx, end)
-        : remaining.slice(idx);
-      sections.push({ title, content: sectionContent });
-      if (end !== -1) remaining = remaining.slice(end);
+      const end = remaining2.indexOf('\n## ', idx + 1);
+      const sectionContent = end !== -1 ? remaining2.slice(idx, end) : remaining2.slice(idx);
+      displaySections.push({ title, content: sectionContent });
+      if (end !== -1) remaining2 = remaining2.slice(end);
     }
   });
-
-  if (sections.length === 0 && markdown) {
-    sections.push({ title: 'Report', content: markdown });
+  if (displaySections.length === 0 && displayMarkdown) {
+    displaySections.push({ title: 'Report', content: displayMarkdown });
   }
+
+  // Run button label/state
+  const runBtnLabel = linearMissing
+    ? 'Configure Linear →'
+    : loading
+      ? 'Fetching Linear data…'
+      : report
+        ? `Refresh Report · ${formatTime(generatedAt || new Date().toISOString())}`
+        : 'Run Report';
+  const runBtnDisabled = loading || linearMissing;
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
       {/* Header row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12 }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Daily Brief</h1>
-        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+          {!viewingReport && (
+            <button
+              onClick={handleSend}
+              disabled={sending || sent}
+              style={{
+                ...accentBtn,
+                background: sent ? 'var(--accent-dim)' : 'var(--bg-card-hover)',
+                color: sent ? '#fff' : 'var(--text-secondary)',
+                opacity: sending ? 0.6 : 1,
+                cursor: sending || sent ? 'default' : 'pointer',
+              }}
+            >
+              {sent ? 'Sent to Discovery ✓' : sending ? 'Sending…' : 'Send to Discovery →'}
+            </button>
+          )}
           <button
-            onClick={handleSend}
-            disabled={sending || sent}
+            onClick={linearMissing ? () => onNavigate && onNavigate('settings') : onRunReport}
+            disabled={runBtnDisabled}
             style={{
               ...accentBtn,
-              background: sent ? 'var(--accent-dim)' : 'var(--bg-card-hover)',
-              color: sent ? '#fff' : 'var(--text-secondary)',
-              opacity: sending ? 0.6 : 1,
-              cursor: sending || sent ? 'default' : 'pointer',
+              background: linearMissing ? 'var(--status-error)' : loading ? 'var(--bg-card-hover)' : undefined,
+              color: loading ? 'var(--text-dim)' : undefined,
+              opacity: loading ? 0.7 : 1,
+              cursor: runBtnDisabled ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
             }}
           >
-            {sent ? 'Sent to Discovery ✓' : sending ? 'Sending…' : 'Send to Discovery →'}
+            {loading && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
+            {runBtnLabel}
           </button>
-          <button onClick={onRunReport} style={accentBtn}>Run Report</button>
         </div>
       </div>
-      {generatedAt && (
-        <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginBottom: 24 }}>
-          Last updated: {formatDate(generatedAt)} {formatTime(generatedAt)}
+      {displayGeneratedAt && !viewingReport && (
+        <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginBottom: 16 }}>
+          Last updated: {formatDate(displayGeneratedAt)} {formatTime(displayGeneratedAt)}
         </p>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {sections.map((s, i) => (
-          <div key={i} style={{
-            background: 'var(--bg-card)', borderRadius: 12,
-            padding: 20, border: '1px solid var(--border)',
-          }}>
-            <MarkdownBody content={s.content} />
-          </div>
-        ))}
-      </div>
+
+      {/* Historic report view mode */}
+      {viewingReport && (
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={() => setViewingReport(null)}
+            style={{ ...accentBtn, background: 'var(--bg-card-hover)', color: 'var(--text-secondary)', padding: '4px 12px', fontSize: '0.8rem' }}
+          >
+            ← Back to latest
+          </button>
+          <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+            Viewing report from {formatDate(viewingReport.created_at)} {formatTime(viewingReport.created_at)}
+          </span>
+        </div>
+      )}
+
+      {viewingLoading ? (
+        <div>
+          <div className="shimmer" style={{ marginBottom: 16 }} />
+          <div className="shimmer" style={{ marginBottom: 16 }} />
+          <div className="shimmer" />
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {displaySections.map((s, i) => (
+            <div key={i} style={{
+              background: 'var(--bg-card)', borderRadius: 12,
+              padding: 20, border: '1px solid var(--border)',
+            }}>
+              <MarkdownBody content={s.content} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Previous Reports */}
+      {!viewingReport && (
+        <div style={{ marginTop: 32, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+          <button
+            onClick={toggleHistory}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)',
+              fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6, padding: 0 }}
+          >
+            <span>{historyOpen ? '▼' : '▶'}</span>
+            Previous Reports
+          </button>
+          {historyOpen && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {historyLoading ? (
+                <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Loading…</span>
+              ) : historyList && historyList.length <= 1 ? (
+                <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No previous reports.</span>
+              ) : (
+                (historyList || []).filter(r => r.id !== report?.id).map(r => (
+                  <button key={r.id}
+                    onClick={() => loadHistoricReport(r.id)}
+                    style={{
+                      background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer',
+                      padding: '6px 10px', borderRadius: 6, fontSize: '0.83rem',
+                      color: 'var(--text-secondary)',
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-card-hover)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                  >
+                    {formatDate(r.created_at)} {formatTime(r.created_at)}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2335,7 +2469,7 @@ function App() {
   const mainContent = () => {
     switch (activeView) {
       case 'report':
-        return <ReportView report={report} loading={reportLoading} onRunReport={runReport} onSendToDiscovery={sendReportToDiscovery} />;
+        return <ReportView report={report} loading={reportLoading} onRunReport={runReport} onSendToDiscovery={sendReportToDiscovery} linearStatus={linearStatus} onNavigate={setActiveView} />;
       case 'icm':
         return <ICMView stages={icmStages} tokenStreams={tokenStreams} processes={processes} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
       case 'agents':
