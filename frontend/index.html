@@ -743,7 +743,7 @@ function FileModal({ file, onClose, addToast }) {
 
 // ─── ICM Pipeline View ────────────────────────────────────────────────────────
 
-function ICMView({ stages, tokenStreams, processes, onRunStage, onMarkDone, addToast, onRefreshStages }) {
+function ICMView({ stages, tokenStreams, processes, onRunStage, onRetryStage, onMarkDone, addToast, onRefreshStages }) {
   const [expanded, setExpanded] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const loadStages = onRefreshStages;
@@ -807,6 +807,7 @@ function ICMView({ stages, tokenStreams, processes, onRunStage, onMarkDone, addT
             tokenStream={tokenStreams[stage.stage_name] || ''}
             processes={processes}
             onRunStage={onRunStage}
+            onRetryStage={onRetryStage}
             onMarkDone={onMarkDone}
             onOpenFile={openFile}
             onPromote={promoteFile}
@@ -1204,7 +1205,7 @@ function InputManagementPanel({ stage, onDone, addToast }) {
   );
 }
 
-function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunStage, onMarkDone, onOpenFile, onPromote, addToast, onRefreshStages }) {
+function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunStage, onRetryStage, onMarkDone, onOpenFile, onPromote, addToast, onRefreshStages }) {
   const tokenRef = useRef(null);
   const [inputFiles, setInputFiles] = useState([]);
   const [outputFiles, setOutputFiles] = useState([]);
@@ -1216,6 +1217,13 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
     if (!processes) return null;
     return processes.find(p => p.type === `icm_stage_${stage.stage_number}` && p.status === 'running') || null;
   }, [processes, stage.stage_number]);
+
+  // Find the last error process for inline error message display
+  const errorProcess = React.useMemo(() => {
+    if (!processes || stage.status !== 'error') return null;
+    const stageProcs = processes.filter(p => p.type === `icm_stage_${stage.stage_number}` && p.status === 'error');
+    return stageProcs.length > 0 ? stageProcs[0] : null;
+  }, [processes, stage.stage_number, stage.status]);
 
   // 1-second tick while running so elapsed display updates live
   const [, setTick] = useState(0);
@@ -1268,6 +1276,7 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
   const hasInputFiles = (stage.input_file_count || 0) > 0;
   const canRun = statusAllowsRun && hasInputFiles;
   const isRunning = stage.status === 'running';
+  const isError = stage.status === 'error';
   const needsReview = stage.status === 'needs_review';
   const isIntake = stage.stage_number === 1;
 
@@ -1391,6 +1400,33 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Error banner — shown when stage errored, with inline error message and Retry button */}
+      {!isIntake && isError && (
+        <div style={{
+          background: '#E9142911', borderTop: '1px solid #E9142933',
+          padding: '10px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12,
+        }}>
+          <div>
+            <span style={{ color: 'var(--status-error)', fontSize: '0.85rem', fontWeight: 600 }}>Stage errored</span>
+            {errorProcess?.error_message && (
+              <p style={{ color: 'var(--text-dim)', fontSize: '0.78rem', marginTop: 2, marginBottom: 0 }}>
+                {errorProcess.error_message}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={() => onRetryStage && onRetryStage(stage.stage_number)}
+            disabled={!hasInputFiles}
+            style={{
+              ...accentBtn, padding: '5px 14px', fontSize: '0.8rem', flexShrink: 0,
+              opacity: hasInputFiles ? 1 : 0.4, cursor: hasInputFiles ? 'pointer' : 'not-allowed',
+            }}
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -2000,6 +2036,7 @@ function ProcessPanel({ processes, onNavigate, onCancel }) {
   const [open, setOpen] = useState(true);
   const [tick, setTick] = useState(0);
   const [cancelling, setCancelling] = useState({});
+  const [confirmingCancel, setConfirmingCancel] = useState(new Set());
   // Set of process IDs manually dismissed by the user (errors)
   const [dismissed, setDismissed] = useState(new Set());
   // Timestamp (ms) when each non-running process was first seen as completed
@@ -2167,26 +2204,49 @@ function ProcessPanel({ processes, onNavigate, onCancel }) {
                       {p.name}
                     </span>
                     {isRunning && (
-                      <button
-                        title="Kill process"
-                        disabled={!!cancelling[p.id]}
-                        onClick={e => {
-                          e.stopPropagation();
-                          setCancelling(prev => ({ ...prev, [p.id]: true }));
-                          onCancel(p.id).finally(() =>
-                            setCancelling(prev => ({ ...prev, [p.id]: false }))
-                          );
-                        }}
-                        style={{
-                          background: 'none', border: '1px solid var(--status-error)',
-                          borderRadius: 4, color: 'var(--status-error)',
-                          cursor: cancelling[p.id] ? 'not-allowed' : 'pointer',
-                          fontSize: '0.7rem', padding: '1px 5px', flexShrink: 0,
-                          opacity: cancelling[p.id] ? 0.5 : 1, lineHeight: 1.4,
-                        }}
-                      >
-                        ⏹
-                      </button>
+                      confirmingCancel.has(p.id) ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>Cancel?</span>
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              setConfirmingCancel(prev => { const n = new Set(prev); n.delete(p.id); return n; });
+                              setCancelling(prev => ({ ...prev, [p.id]: true }));
+                              onCancel(p.id).finally(() =>
+                                setCancelling(prev => ({ ...prev, [p.id]: false }))
+                              );
+                            }}
+                            style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 4,
+                              background: 'var(--status-error)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                          >Yes</button>
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              setConfirmingCancel(prev => { const n = new Set(prev); n.delete(p.id); return n; });
+                            }}
+                            style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 4,
+                              background: 'var(--bg-card-hover)', color: 'var(--text-secondary)', border: 'none', cursor: 'pointer' }}
+                          >No</button>
+                        </div>
+                      ) : (
+                        <button
+                          title="Cancel process"
+                          disabled={!!cancelling[p.id]}
+                          onClick={e => {
+                            e.stopPropagation();
+                            setConfirmingCancel(prev => new Set(prev).add(p.id));
+                          }}
+                          style={{
+                            background: 'none', border: '1px solid var(--status-error)',
+                            borderRadius: 4, color: 'var(--status-error)',
+                            cursor: cancelling[p.id] ? 'not-allowed' : 'pointer',
+                            fontSize: '0.7rem', padding: '1px 5px', flexShrink: 0,
+                            opacity: cancelling[p.id] ? 0.5 : 1, lineHeight: 1.4,
+                          }}
+                        >
+                          ⏹
+                        </button>
+                      )
                     )}
                     {isError && (
                       <button
@@ -2459,6 +2519,20 @@ function App() {
     }
   }
 
+  async function retryStage(stageNumber) {
+    try {
+      await API.post(`/api/icm/stages/${stageNumber}/retry`, {});
+      addToast(`Stage ${stageNumber} retrying`, 'info');
+      setTokenStreams(prev => {
+        const stageName = ['','intake','discovery','opportunity','prd','critique','stories'][stageNumber];
+        return { ...prev, [stageName]: '' };
+      });
+      await loadStatus();
+    } catch (err) {
+      addToast(`Failed to retry stage ${stageNumber}: ${err.message}`, 'error');
+    }
+  }
+
   async function markStageDone(stageNumber) {
     try {
       await API.post(`/api/icm/stages/${stageNumber}/done`, {});
@@ -2507,7 +2581,7 @@ function App() {
       case 'report':
         return <ReportView report={report} loading={reportLoading} onRunReport={runReport} onSendToDiscovery={sendReportToDiscovery} linearStatus={linearStatus} onNavigate={setActiveView} />;
       case 'icm':
-        return <ICMView stages={icmStages} tokenStreams={tokenStreams} processes={processes} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
+        return <ICMView stages={icmStages} tokenStreams={tokenStreams} processes={processes} onRunStage={runStage} onRetryStage={retryStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
       case 'agents':
         return <AgentsView processes={processes} onRunReport={runReport} focusedAgentId={focusedAgentId} />;
       case 'settings':
