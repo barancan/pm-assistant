@@ -72,6 +72,44 @@ async def broadcast_update(event_type: str, data: dict) -> None:
 
 # ─── Lifespan ──────────────────────────────────────────────────────────────────
 
+_ZOMBIE_TIMEOUT_SECONDS = 10 * 60  # 10 minutes
+
+
+async def _zombie_sweeper() -> None:
+    """Background task: every 60 s, mark processes that have been 'running'
+    for more than _ZOMBIE_TIMEOUT_SECONDS as 'error' and broadcast the update."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            processes = await database.get_all_processes()
+            now = datetime.now(timezone.utc)
+            for p in processes:
+                if p["status"] != "running":
+                    continue
+                started = p.get("started_at")
+                if not started:
+                    continue
+                age = (now - datetime.fromisoformat(started)).total_seconds()
+                if age >= _ZOMBIE_TIMEOUT_SECONDS:
+                    await database.upsert_process(
+                        id=p["id"],
+                        name=p["name"],
+                        type=p["type"],
+                        status="error",
+                        completed_at=now.isoformat(),
+                        error_message="Process timed out (running > 10 minutes)",
+                    )
+                    _running_tasks.pop(p["id"], None)
+                    await broadcast_update("process_update", {
+                        "process_id": p["id"],
+                        "status": "error",
+                        "error_message": "Process timed out (running > 10 minutes)",
+                    })
+                    print(f"[Sweeper] Marked zombie process {p['id'][:8]} ({p['name']}) as error")
+        except Exception as exc:
+            print(f"[Sweeper] Error: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Resolve DATABASE_PATH relative to the project root (parent of backend/)
@@ -90,7 +128,17 @@ async def lifespan(app: FastAPI):
     BaseAgent.WORKSPACE = WORKSPACE_PATH
 
     await database.init_db()
-    yield
+
+    # Start background zombie sweeper
+    sweeper = asyncio.create_task(_zombie_sweeper())
+    try:
+        yield
+    finally:
+        sweeper.cancel()
+        try:
+            await sweeper
+        except asyncio.CancelledError:
+            pass
 
 
 # ─── App ───────────────────────────────────────────────────────────────────────
