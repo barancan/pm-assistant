@@ -604,7 +604,7 @@ function FileModal({ file, onClose, addToast }) {
 
 // ─── ICM Pipeline View ────────────────────────────────────────────────────────
 
-function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast, onRefreshStages }) {
+function ICMView({ stages, tokenStreams, processes, onRunStage, onMarkDone, addToast, onRefreshStages }) {
   const [expanded, setExpanded] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const loadStages = onRefreshStages;
@@ -666,6 +666,7 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast, onRef
             expanded={expanded === stage.stage_number}
             onToggle={() => toggleExpand(stage.stage_number)}
             tokenStream={tokenStreams[stage.stage_name] || ''}
+            processes={processes}
             onRunStage={onRunStage}
             onMarkDone={onMarkDone}
             onOpenFile={openFile}
@@ -1056,12 +1057,26 @@ function InputManagementPanel({ stage, onDone, addToast }) {
   );
 }
 
-function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkDone, onOpenFile, onPromote, addToast, onRefreshStages }) {
+function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunStage, onMarkDone, onOpenFile, onPromote, addToast, onRefreshStages }) {
   const tokenRef = useRef(null);
   const [inputFiles, setInputFiles] = useState([]);
   const [outputFiles, setOutputFiles] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [inputPanelOpen, setInputPanelOpen] = useState(false);
+
+  // Find the running process for this stage to get started_at for elapsed timer
+  const runningProcess = React.useMemo(() => {
+    if (!processes) return null;
+    return processes.find(p => p.type === `icm_stage_${stage.stage_number}` && p.status === 'running') || null;
+  }, [processes, stage.stage_number]);
+
+  // 1-second tick while running so elapsed display updates live
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (stage.status !== 'running') return;
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [stage.status]);
 
   useEffect(() => {
     if (tokenRef.current && tokenStream) {
@@ -1102,10 +1117,18 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
     fetchFiles();
   }, [expanded, stage.stage_number, stage.stage_name]);
 
-  const canRun = ['idle', 'done', 'error', 'needs_review'].includes(stage.status);
+  const statusAllowsRun = ['idle', 'done', 'error', 'needs_review'].includes(stage.status);
+  const hasInputFiles = (stage.input_file_count || 0) > 0;
+  const canRun = statusAllowsRun && hasInputFiles;
   const isRunning = stage.status === 'running';
   const needsReview = stage.status === 'needs_review';
   const isIntake = stage.stage_number === 1;
+
+  const runBtnLabel = isRunning
+    ? `Running… ${elapsed(runningProcess?.started_at)}`
+    : hasInputFiles
+      ? `Run with ${stage.input_file_count} file${stage.input_file_count !== 1 ? 's' : ''}`
+      : 'No Input Files';
 
   return (
     <div style={{
@@ -1133,11 +1156,15 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
             {stage.stage_name}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            {stage.last_run_at && (
+            {isRunning && runningProcess?.started_at ? (
+              <span style={{ color: 'var(--status-running)', fontSize: '0.72rem', fontVariantNumeric: 'tabular-nums' }}>
+                ● {elapsed(runningProcess.started_at)}
+              </span>
+            ) : stage.last_run_at ? (
               <span style={{ color: 'var(--text-dim)', fontSize: '0.72rem' }}>
                 Last run: {formatDate(stage.last_run_at)} {formatTime(stage.last_run_at)}
               </span>
-            )}
+            ) : null}
             {stage.input_file_count > 0 && (
               <span style={{ fontSize: '0.68rem', padding: '1px 7px', borderRadius: 10,
                 background: 'var(--bg-card-hover)', color: 'var(--text-dim)' }}>
@@ -1160,12 +1187,19 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
         }}>
           {stage.status.replace('_', ' ')}
         </div>
-        {!isIntake && canRun && (
+        {!isIntake && (isRunning || statusAllowsRun) && (
           <button
+            disabled={!canRun || isRunning}
             onClick={e => { e.stopPropagation(); onRunStage(stage.stage_number); }}
-            style={{ ...accentBtn, padding: '6px 14px', fontSize: '0.8rem' }}
+            style={{
+              ...accentBtn, padding: '6px 14px', fontSize: '0.8rem',
+              opacity: (!canRun || isRunning) ? 0.45 : 1,
+              cursor: (!canRun || isRunning) ? 'not-allowed' : 'pointer',
+              background: isRunning ? 'var(--status-running)' : !hasInputFiles ? 'var(--bg-card-hover)' : undefined,
+              color: isRunning ? '#000' : !hasInputFiles ? 'var(--text-dim)' : undefined,
+            }}
           >
-            Run Stage
+            {runBtnLabel}
           </button>
         )}
         {!isIntake && stage.stage_number < 6 && (
@@ -2250,7 +2284,7 @@ function App() {
       case 'report':
         return <ReportView report={report} loading={reportLoading} onRunReport={runReport} onSendToDiscovery={sendReportToDiscovery} />;
       case 'icm':
-        return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
+        return <ICMView stages={icmStages} tokenStreams={tokenStreams} processes={processes} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
       case 'agents':
         return <AgentsView processes={processes} onRunReport={runReport} focusedAgentId={focusedAgentId} />;
       case 'settings':
