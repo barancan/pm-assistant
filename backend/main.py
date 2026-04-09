@@ -441,6 +441,15 @@ async def mark_stage_done(stage_number: int):
     return {"stage_number": stage_number, "status": "done"}
 
 
+@app.post("/api/icm/stages/{stage_number}/retry")
+async def retry_icm_stage(stage_number: int):
+    """Re-run a stage that errored. Input files are left untouched."""
+    if stage_number not in range(2, 7):
+        raise HTTPException(status_code=400, detail="Stage must be 2-6")
+    # Delegate to the standard run endpoint logic
+    return await run_icm_stage(stage_number)
+
+
 @app.get("/api/icm/{stage_number}/input-sources")
 async def get_stage_input_sources(stage_number: int):
     if stage_number not in range(2, 7):
