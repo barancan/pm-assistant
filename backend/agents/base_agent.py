@@ -101,7 +101,13 @@ class BaseAgent(ABC):
         stream_callback: Optional[Callable] = None,
     ) -> str:
         ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        model = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
+        stage_num = getattr(self, 'stage_number', None)
+        stage_env = f"STAGE_{stage_num}_MODEL" if stage_num else None
+        model = (
+            os.environ.get(stage_env)
+            if stage_env and os.environ.get(stage_env)
+            else os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
+        )
         url = f"{ollama_host}/api/chat"
 
         payload = {
