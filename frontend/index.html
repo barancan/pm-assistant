@@ -603,6 +603,37 @@ function ReportView({ report, loading, onRunReport, onSendToDiscovery, linearSta
   );
 }
 
+// ─── Lightbox ─────────────────────────────────────────────────────────────────
+
+function Lightbox({ src, name, onClose }) {
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.92)',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        zIndex: 200,
+      }}
+    >
+      <img
+        src={src}
+        alt={name}
+        onClick={e => e.stopPropagation()}
+        style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 6 }}
+      />
+      <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginTop: 12 }}>
+        {name} · click outside or press Esc to close
+      </p>
+    </div>
+  );
+}
+
 // ─── File Modal ───────────────────────────────────────────────────────────────
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']);
@@ -747,6 +778,7 @@ function FileModal({ file, onClose, onSaved, addToast }) {
 function ICMView({ stages, tokenStreams, processes, onRunStage, onRetryStage, onMarkDone, addToast, onRefreshStages }) {
   const [expanded, setExpanded] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [lightboxFile, setLightboxFile] = useState(null); // { path, name }
   // Tracks paths of output files edited this session — resets on page reload
   const [editedFiles, setEditedFiles] = useState(new Set());
   const loadStages = onRefreshStages;
@@ -756,6 +788,10 @@ function ICMView({ stages, tokenStreams, processes, onRunStage, onRetryStage, on
   };
 
   const openFile = async (filePath, fileName, editable) => {
+    if (isImageFile(fileName)) {
+      setLightboxFile({ path: filePath, name: fileName });
+      return;
+    }
     setPreviewFile({ name: fileName, path: filePath, content: null, editable, loading: true });
     try {
       const data = await API.get(`/api/workspace/file?path=${encodeURIComponent(filePath)}`);
@@ -822,6 +858,13 @@ function ICMView({ stages, tokenStreams, processes, onRunStage, onRetryStage, on
       </div>
       <FileModal file={previewFile} onClose={() => setPreviewFile(null)} addToast={addToast}
         onSaved={path => setEditedFiles(prev => new Set(prev).add(path))} />
+      {lightboxFile && (
+        <Lightbox
+          src={`/api/workspace/file-raw?path=${encodeURIComponent(lightboxFile.path)}`}
+          name={lightboxFile.name}
+          onClose={() => setLightboxFile(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1592,12 +1635,22 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
                     No input files — add .md files to 0{stage.stage_number}_{stage.stage_name}/input/
                   </p>
                 ) : inputFiles.map(f => (
-                  <button key={f.path} onClick={() => onOpenFile(f.path, f.label, false)}
-                    style={{ display: 'block', background: 'none', border: 'none', color: 'var(--accent)',
-                      cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
-                      fontSize: '0.8rem', padding: '3px 0', textDecoration: 'underline' }}>
-                    {f.label}
-                  </button>
+                  <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+                    {isImageFile(f.label) && (
+                      <img
+                        src={`/api/workspace/file-raw?path=${encodeURIComponent(f.path)}`}
+                        alt={f.label}
+                        style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, flexShrink: 0, cursor: 'pointer' }}
+                        onClick={() => onOpenFile(f.path, f.label, false)}
+                      />
+                    )}
+                    <button onClick={() => onOpenFile(f.path, f.label, false)}
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)',
+                        cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
+                        fontSize: '0.8rem', padding: 0, textDecoration: 'underline' }}>
+                      {f.label}
+                    </button>
+                  </div>
                 ))}
               </div>
 
@@ -1612,7 +1665,15 @@ function StageCard({ stage, expanded, onToggle, tokenStream, processes, onRunSta
                 ) : outputFiles.length === 0 ? (
                   <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No output yet</p>
                 ) : outputFiles.map(f => (
-                  <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+                  <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+                    {isImageFile(f.label) && (
+                      <img
+                        src={`/api/workspace/file-raw?path=${encodeURIComponent(f.path)}`}
+                        alt={f.label}
+                        style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, flexShrink: 0, cursor: 'pointer' }}
+                        onClick={() => onOpenFile(f.path, f.label, true)}
+                      />
+                    )}
                     <button onClick={() => onOpenFile(f.path, f.label, true)}
                       style={{ background: 'none', border: 'none', color: 'var(--accent)',
                         cursor: 'pointer', textAlign: 'left', fontFamily: 'monospace',
