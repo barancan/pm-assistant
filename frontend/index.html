@@ -355,7 +355,23 @@ function StatusDot({ label, status }) {
 
 // ─── Daily Report View ────────────────────────────────────────────────────────
 
-function ReportView({ report, loading, onRunReport }) {
+function ReportView({ report, loading, onRunReport, onSendToDiscovery }) {
+  const [sent, setSent] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  // Reset sent state when a new report is loaded
+  useEffect(() => { setSent(false); }, [report?.id]);
+
+  const handleSend = async () => {
+    setSending(true);
+    try {
+      await onSendToDiscovery();
+      setSent(true);
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ padding: 24 }}>
@@ -409,9 +425,25 @@ function ReportView({ report, loading, onRunReport }) {
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12 }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Daily Brief</h1>
-        <button onClick={onRunReport} style={accentBtn}>Run Report</button>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <button
+            onClick={handleSend}
+            disabled={sending || sent}
+            style={{
+              ...accentBtn,
+              background: sent ? 'var(--accent-dim)' : 'var(--bg-card-hover)',
+              color: sent ? '#fff' : 'var(--text-secondary)',
+              opacity: sending ? 0.6 : 1,
+              cursor: sending || sent ? 'default' : 'pointer',
+            }}
+          >
+            {sent ? 'Sent to Discovery ✓' : sending ? 'Sending…' : 'Send to Discovery →'}
+          </button>
+          <button onClick={onRunReport} style={accentBtn}>Run Report</button>
+        </div>
       </div>
       {generatedAt && (
         <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginBottom: 24 }}>
@@ -2157,6 +2189,20 @@ function App() {
     }
   }
 
+  async function sendReportToDiscovery() {
+    try {
+      await API.post('/api/icm/promote/1', {
+        selected_files: ['daily_report.md'],
+        source: 'previous_stage',
+      });
+      addToast('Report sent to Discovery input', 'success');
+      await loadStatus();
+    } catch (err) {
+      addToast(`Could not send to Discovery: ${err.message}`, 'error');
+      throw err; // re-throw so ReportView can reset its sending state
+    }
+  }
+
   async function runStage(stageNumber) {
     try {
       await API.post(`/api/icm/run/${stageNumber}`, {});
@@ -2202,7 +2248,7 @@ function App() {
   const mainContent = () => {
     switch (activeView) {
       case 'report':
-        return <ReportView report={report} loading={reportLoading} onRunReport={runReport} />;
+        return <ReportView report={report} loading={reportLoading} onRunReport={runReport} onSendToDiscovery={sendReportToDiscovery} />;
       case 'icm':
         return <ICMView stages={icmStages} tokenStreams={tokenStreams} onRunStage={runStage} onMarkDone={markStageDone} addToast={addToast} onRefreshStages={loadStatus} />;
       case 'agents':
