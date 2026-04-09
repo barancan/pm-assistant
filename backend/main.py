@@ -123,6 +123,7 @@ class PromoteRequest(BaseModel):
 
 class ICMPromoteRequest(BaseModel):
     selected_files: list[str]
+    source: str = "previous_stage"  # "previous_stage" | "intake_trusted"
 
 
 # ─── ICM stage name helpers ────────────────────────────────────────────────────
@@ -149,6 +150,26 @@ def _sanitize_filename(name: str) -> str:
 
 def _stage_path(stage_number: int) -> str:
     return f"0{stage_number}_{_STAGE_NAMES[stage_number]}"
+
+
+def _list_md_files(directory: Path) -> list[dict]:
+    """Return .md files in a directory, sorted newest-first."""
+    if not directory.is_dir():
+        return []
+    files = []
+    for f in directory.iterdir():
+        if f.name.startswith(".") or f.name == ".gitkeep" or not f.is_file():
+            continue
+        if f.suffix.lower() != ".md":
+            continue
+        stat = f.stat()
+        files.append({
+            "name": f.name,
+            "path": str(f.relative_to(WORKSPACE_PATH)),
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return sorted(files, key=lambda x: x["modified_at"], reverse=True)
 
 
 # ─── Workspace path helpers ────────────────────────────────────────────────────
@@ -298,24 +319,45 @@ async def get_stage_output_files(stage_number: int):
         out_dir = WORKSPACE_PATH / "01_intake" / "trusted"
     else:
         out_dir = WORKSPACE_PATH / _stage_path(stage_number) / "output"
-    if not out_dir.is_dir():
-        return {"files": []}
-    files = []
-    for f in sorted(out_dir.iterdir()):
-        if f.name.startswith(".") or f.name == ".gitkeep" or not f.is_file():
-            continue
-        if f.suffix.lower() != ".md":
-            continue
-        stat = f.stat()
-        files.append({
-            "name": f.name,
-            "path": str(f.relative_to(WORKSPACE_PATH)),
-            "size_bytes": stat.st_size,
-            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        })
-    # Newest first
-    files.sort(key=lambda x: x["modified_at"], reverse=True)
-    return {"files": files}
+    return {"files": _list_md_files(out_dir)}
+
+
+@app.post("/api/icm/stages/{stage_number}/done")
+async def mark_stage_done(stage_number: int):
+    if stage_number not in range(2, 7):
+        raise HTTPException(status_code=400, detail="Stage must be 2-6")
+    await database.update_icm_stage(stage_number, "done")
+    return {"stage_number": stage_number, "status": "done"}
+
+
+@app.get("/api/icm/{stage_number}/input-sources")
+async def get_stage_input_sources(stage_number: int):
+    if stage_number not in range(2, 7):
+        raise HTTPException(status_code=400, detail="Stage must be 2-6")
+
+    # Source A: previous stage output (or intake/trusted for stage 2)
+    if stage_number == 2:
+        prev_dir = WORKSPACE_PATH / "01_intake" / "trusted"
+        previous_stage = {"stage_number": 1, "stage_name": "intake", "files": _list_md_files(prev_dir)}
+    else:
+        prev_num = stage_number - 1
+        prev_dir = WORKSPACE_PATH / _stage_path(prev_num) / "output"
+        previous_stage = {"stage_number": prev_num, "stage_name": _STAGE_NAMES[prev_num], "files": _list_md_files(prev_dir)}
+
+    # Source B: intake trusted (always available)
+    trusted_dir = WORKSPACE_PATH / "01_intake" / "trusted"
+    intake_trusted = {"files": _list_md_files(trusted_dir)}
+
+    # Source C: already queued in this stage's input
+    input_dir = WORKSPACE_PATH / _stage_path(stage_number) / "input"
+    current_input = {"files": _list_md_files(input_dir)}
+
+    return {
+        "stage_number": stage_number,
+        "previous_stage": previous_stage,
+        "intake_trusted": intake_trusted,
+        "current_input": current_input,
+    }
 
 
 @app.post("/api/icm/promote/{stage_number}")
@@ -325,8 +367,11 @@ async def promote_icm_files(stage_number: int, req: ICMPromoteRequest):
     if not req.selected_files:
         raise HTTPException(status_code=400, detail="selected_files must be non-empty")
 
-    # Stage 1 (intake) promotes from trusted/ instead of output/
-    if stage_number == 1:
+    # Resolve source directory based on `source` field (automation-compatible)
+    if req.source == "intake_trusted" or stage_number == 1:
+        src_dir = WORKSPACE_PATH / "01_intake" / "trusted"
+    elif stage_number == 2:
+        # Stage 2's "previous_stage" is intake/trusted (no stage 1 output/ exists)
         src_dir = WORKSPACE_PATH / "01_intake" / "trusted"
     else:
         src_dir = WORKSPACE_PATH / _stage_path(stage_number) / "output"
