@@ -604,9 +604,28 @@ function ICMView({ stages, tokenStreams, onRunStage, onMarkDone, addToast, onRef
     }
   };
 
+  const allIdle = stages.length > 0 && stages.every(s =>
+    s.status === 'idle' && (s.output_file_count || 0) === 0
+  );
+
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
-      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: 24 }}>ICM Pipeline</h1>
+      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: allIdle ? 12 : 24 }}>ICM Pipeline</h1>
+
+      {allIdle && (
+        <div style={{
+          background: 'var(--bg-card)', borderRadius: 10, padding: '14px 20px',
+          border: '1px solid var(--border)', marginBottom: 20,
+          display: 'flex', alignItems: 'center', gap: 12,
+          color: 'var(--text-secondary)', fontSize: '0.875rem',
+        }}>
+          <span style={{ fontSize: '1.2rem' }}>◈</span>
+          <span>
+            Start by running the <strong style={{ color: 'var(--text-primary)' }}>Daily Report</strong>, then use <strong style={{ color: 'var(--text-primary)' }}>Send to Discovery →</strong> to feed it into Stage 2.
+          </span>
+        </div>
+      )}
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {stages.map(stage => (
           <StageCard
@@ -1077,15 +1096,29 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
         }}>
           {stage.stage_number}
         </div>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, textTransform: 'capitalize', marginBottom: 2 }}>
             {stage.stage_name}
           </div>
-          {stage.last_run_at && (
-            <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
-              Last run: {formatDate(stage.last_run_at)} {formatTime(stage.last_run_at)}
-            </div>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            {stage.last_run_at && (
+              <span style={{ color: 'var(--text-dim)', fontSize: '0.72rem' }}>
+                Last run: {formatDate(stage.last_run_at)} {formatTime(stage.last_run_at)}
+              </span>
+            )}
+            {stage.input_file_count > 0 && (
+              <span style={{ fontSize: '0.68rem', padding: '1px 7px', borderRadius: 10,
+                background: 'var(--bg-card-hover)', color: 'var(--text-dim)' }}>
+                {stage.input_file_count} in
+              </span>
+            )}
+            {stage.output_file_count > 0 && (
+              <span style={{ fontSize: '0.68rem', padding: '1px 7px', borderRadius: 10,
+                background: `${statusColor('done')}22`, color: 'var(--status-done)' }}>
+                {stage.output_file_count} out
+              </span>
+            )}
+          </div>
         </div>
         <div style={{
           padding: '3px 10px', borderRadius: 20, fontSize: '0.75rem', fontWeight: 600,
@@ -1145,6 +1178,27 @@ function StageCard({ stage, expanded, onToggle, tokenStream, onRunStage, onMarkD
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Ready to advance nudge — shown when stage has output but panel is closed */}
+      {!isIntake && !needsReview && !inputPanelOpen &&
+        (stage.status === 'done') &&
+        stage.output_file_count > 0 &&
+        stage.stage_number < 6 && (
+        <div style={{
+          background: '#1DB95411', borderTop: '1px solid #1DB95433',
+          padding: '8px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <span style={{ color: 'var(--accent)', fontSize: '0.82rem' }}>
+            {stage.output_file_count} output file{stage.output_file_count !== 1 ? 's' : ''} ready to advance →
+          </span>
+          <button
+            onClick={() => setInputPanelOpen(true)}
+            style={{ ...accentBtn, padding: '4px 12px', fontSize: '0.78rem' }}
+          >
+            Advance to Stage {stage.stage_number + 1} →
+          </button>
         </div>
       )}
 

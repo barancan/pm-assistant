@@ -253,7 +253,22 @@ def _assert_writable_ws(resolved: Path) -> None:
 
 async def get_status_snapshot() -> dict:
     processes = await database.get_all_processes()
-    icm_stages = await database.get_all_icm_stages()
+    raw_stages = await database.get_all_icm_stages()
+    icm_stages = []
+    for stage in raw_stages:
+        n = stage["stage_number"]
+        if n == 1:
+            input_dir = WORKSPACE_PATH / "01_intake" / "quarantine"
+            output_dir = WORKSPACE_PATH / "01_intake" / "trusted"
+        else:
+            stage_dir = WORKSPACE_PATH / _stage_path(n)
+            input_dir = stage_dir / "input"
+            output_dir = stage_dir / "output"
+        icm_stages.append({
+            **stage,
+            "input_file_count": _count_files(input_dir),
+            "output_file_count": _count_files(output_dir),
+        })
 
     # Check Ollama
     ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -298,10 +313,35 @@ async def get_latest_report():
     return {"report": report}
 
 
+def _count_files(directory: Path) -> int:
+    """Count non-hidden, non-gitkeep files in a directory (any extension)."""
+    if not directory.is_dir():
+        return 0
+    return sum(
+        1 for f in directory.iterdir()
+        if f.is_file() and not f.name.startswith(".") and f.name != ".gitkeep"
+    )
+
+
 @app.get("/api/icm/stages")
 async def get_icm_stages():
     stages = await database.get_all_icm_stages()
-    return {"stages": stages}
+    enriched = []
+    for stage in stages:
+        n = stage["stage_number"]
+        if n == 1:
+            input_dir = WORKSPACE_PATH / "01_intake" / "quarantine"
+            output_dir = WORKSPACE_PATH / "01_intake" / "trusted"
+        else:
+            stage_dir = WORKSPACE_PATH / _stage_path(n)
+            input_dir = stage_dir / "input"
+            output_dir = stage_dir / "output"
+        enriched.append({
+            **stage,
+            "input_file_count": _count_files(input_dir),
+            "output_file_count": _count_files(output_dir),
+        })
+    return {"stages": enriched}
 
 
 @app.get("/api/workspace/files")
