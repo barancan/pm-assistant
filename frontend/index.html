@@ -1681,7 +1681,18 @@ function SettingsView({ ollamaStatus, claudeStatus, linearStatus }) {
 
 // ─── Chat Bar ─────────────────────────────────────────────────────────────────
 
-function ChatBar({ chatHistory, onSend, loading }) {
+function parseAction(action) {
+  if (!action) return null;
+  if (action === 'run_linear_report') return { label: 'Running Daily Report', view: 'report' };
+  if (action.startsWith('run_icm_stage:')) {
+    const num = parseInt(action.split(':')[1], 10);
+    const names = { 2: 'Discovery', 3: 'Opportunity', 4: 'PRD', 5: 'Critique', 6: 'Stories' };
+    return { label: `Running Stage ${num} · ${names[num] || ''}`, view: 'icm' };
+  }
+  return { label: action, view: null };
+}
+
+function ChatBar({ chatHistory, onSend, onNavigate, loading }) {
   const [message, setMessage] = useState('');
   const [focused, setFocused] = useState(false);
   const inputRef = useRef(null);
@@ -1722,21 +1733,51 @@ function ChatBar({ chatHistory, onSend, loading }) {
             padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 8,
           }}
         >
-          {visibleHistory.map((msg, i) => (
-            <div key={i} style={{
-              display: 'flex',
-              justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
-            }}>
-              <div style={{
-                maxWidth: '70%', padding: '8px 12px', borderRadius: 10,
-                background: msg.role === 'user' ? '#1DB95433' : 'var(--bg-card)',
-                color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.5,
-                border: '1px solid var(--border)',
+          {visibleHistory.map((msg, i) => {
+            const parsed = msg.role === 'assistant' ? parseAction(msg.action_triggered) : null;
+            return (
+              <div key={i} style={{
+                display: 'flex',
+                justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
               }}>
-                {msg.content}
+                <div style={{
+                  maxWidth: '75%', padding: '8px 12px', borderRadius: 10,
+                  background: msg.role === 'user' ? '#1DB95433' : 'var(--bg-card)',
+                  color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.5,
+                  border: '1px solid var(--border)',
+                }}>
+                  {msg.content}
+                  {parsed && (
+                    <div style={{
+                      marginTop: 8, paddingTop: 8,
+                      borderTop: '1px solid var(--border)',
+                      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                    }}>
+                      <span style={{
+                        fontSize: '0.75rem', color: 'var(--status-running)',
+                        display: 'flex', alignItems: 'center', gap: 4,
+                      }}>
+                        <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
+                        {parsed.label}
+                      </span>
+                      {parsed.view && onNavigate && (
+                        <button
+                          onClick={() => onNavigate(parsed.view)}
+                          style={{
+                            background: 'none', border: 'none', padding: '1px 6px',
+                            borderRadius: 4, cursor: 'pointer', fontSize: '0.73rem',
+                            color: 'var(--accent)', textDecoration: 'underline',
+                          }}
+                        >
+                          View →
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -2274,9 +2315,13 @@ function App() {
     setChatHistory(prev => [...prev, { role: 'user', content: message, id: Date.now() }]);
     try {
       const data = await API.post('/api/chat', { message });
-      setChatHistory(prev => [...prev, { role: 'assistant', content: data.response, id: Date.now() + 1 }]);
+      setChatHistory(prev => [...prev, {
+        role: 'assistant',
+        content: data.response,
+        id: Date.now() + 1,
+        action_triggered: data.action_triggered || null,
+      }]);
       if (data.action_triggered) {
-        addToast(`Action triggered: ${data.action_triggered}`, 'info');
         await loadStatus();
       }
     } catch (err) {
@@ -2341,7 +2386,7 @@ function App() {
           </div>
         </main>
       </div>
-      <ChatBar chatHistory={chatHistory} onSend={sendChat} loading={chatLoading} />
+      <ChatBar chatHistory={chatHistory} onSend={sendChat} loading={chatLoading} onNavigate={setActiveView} />
       <ToastContainer toasts={toasts} />
     </>
   );
