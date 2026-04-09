@@ -214,6 +214,11 @@ const API = {
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
+  async delete(path) {
+    const r = await fetch(path, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  },
 };
 
 // ─── Toast Manager ────────────────────────────────────────────────────────────
@@ -1826,7 +1831,7 @@ function parseAction(action) {
   return { label: action, view: null };
 }
 
-function ChatBar({ chatHistory, onSend, onNavigate, loading }) {
+function ChatBar({ chatHistory, onSend, onNavigate, onClear, loading }) {
   const [message, setMessage] = useState('');
   const [focused, setFocused] = useState(false);
   const inputRef = useRef(null);
@@ -1864,11 +1869,25 @@ function ChatBar({ chatHistory, onSend, onNavigate, loading }) {
           className="slide-up"
           style={{
             maxHeight: 240, overflowY: 'auto',
-            padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 8,
+            padding: '12px 20px 8px', display: 'flex', flexDirection: 'column', gap: 8,
           }}
         >
+          {/* Clear button */}
+          {onClear && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={onClear}
+                style={{ background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--text-dim)', fontSize: '0.72rem', padding: '2px 6px' }}
+                title="Clear chat history"
+              >
+                Clear history
+              </button>
+            </div>
+          )}
           {visibleHistory.map((msg, i) => {
             const parsed = msg.role === 'assistant' ? parseAction(msg.action_triggered) : null;
+            const ts = msg.created_at || (msg.id ? new Date(msg.id).toISOString() : null);
             return (
               <div key={i} style={{
                 display: 'flex',
@@ -1881,6 +1900,12 @@ function ChatBar({ chatHistory, onSend, onNavigate, loading }) {
                   border: '1px solid var(--border)',
                 }}>
                   {msg.content}
+                  {ts && (
+                    <div style={{ marginTop: 4, fontSize: '0.68rem', color: 'var(--text-dim)',
+                      textAlign: msg.role === 'user' ? 'right' : 'left' }}>
+                      {formatTime(ts)}
+                    </div>
+                  )}
                   {parsed && (
                     <div style={{
                       marginTop: 8, paddingTop: 8,
@@ -2444,15 +2469,26 @@ function App() {
     }
   }
 
+  async function clearChatHistory() {
+    try {
+      await API.delete('/api/chat/history');
+      setChatHistory([]);
+    } catch (err) {
+      addToast(`Could not clear history: ${err.message}`, 'error');
+    }
+  }
+
   async function sendChat(message) {
+    const now = new Date().toISOString();
     setChatLoading(true);
-    setChatHistory(prev => [...prev, { role: 'user', content: message, id: Date.now() }]);
+    setChatHistory(prev => [...prev, { role: 'user', content: message, id: Date.now(), created_at: now }]);
     try {
       const data = await API.post('/api/chat', { message });
       setChatHistory(prev => [...prev, {
         role: 'assistant',
         content: data.response,
         id: Date.now() + 1,
+        created_at: new Date().toISOString(),
         action_triggered: data.action_triggered || null,
       }]);
       if (data.action_triggered) {
@@ -2520,7 +2556,7 @@ function App() {
           </div>
         </main>
       </div>
-      <ChatBar chatHistory={chatHistory} onSend={sendChat} loading={chatLoading} onNavigate={setActiveView} />
+      <ChatBar chatHistory={chatHistory} onSend={sendChat} loading={chatLoading} onNavigate={setActiveView} onClear={clearChatHistory} />
       <ToastContainer toasts={toasts} />
     </>
   );

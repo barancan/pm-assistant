@@ -571,6 +571,12 @@ async def get_chat_history():
     return {"messages": messages}
 
 
+@app.delete("/api/chat/history")
+async def clear_chat_history():
+    await database.clear_chat_history()
+    return {"ok": True}
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     processes = await database.get_all_processes()
