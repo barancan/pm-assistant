@@ -7,6 +7,7 @@
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="/static/marked.min.js"></script>
   <style>
     :root {
       --bg-base: #121212;
@@ -88,6 +89,29 @@
     .toast { animation: fadeInOut 3s forwards; }
     .toast-error { animation: fadeInOut 5s forwards; }
 
+    /* Markdown body rendering */
+    .md-body { line-height: 1.7; font-size: 0.9rem; color: var(--text-secondary); }
+    .md-body h1 { color: var(--text-primary); font-size: 1.2rem; font-weight: 700; margin: 20px 0 10px; }
+    .md-body h2 { color: var(--text-primary); font-size: 1rem; font-weight: 600; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+    .md-body h3 { color: var(--text-secondary); font-size: 0.9rem; font-weight: 600; margin: 14px 0 6px; }
+    .md-body h4 { color: var(--text-secondary); font-size: 0.85rem; font-weight: 600; margin: 10px 0 4px; }
+    .md-body p { margin: 8px 0; }
+    .md-body ul, .md-body ol { margin: 8px 0 8px 20px; }
+    .md-body li { margin: 4px 0; }
+    .md-body strong { color: var(--text-primary); font-weight: 600; }
+    .md-body em { font-style: italic; }
+    .md-body code { background: #2a2a2a; color: #e0e0e0; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.82rem; }
+    .md-body pre { background: #1a1a1a; border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin: 10px 0; }
+    .md-body pre code { background: none; padding: 0; font-size: 0.82rem; }
+    .md-body blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text-dim); margin: 10px 0; }
+    .md-body table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.85rem; }
+    .md-body th { background: var(--bg-card-hover); color: var(--text-primary); font-weight: 600; padding: 8px 12px; text-align: left; border: 1px solid var(--border); }
+    .md-body td { padding: 7px 12px; border: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:nth-child(even) { background: #1a1a1a; }
+    .md-body a { color: var(--accent); text-decoration: underline; }
+    .md-body hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .md-body img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
     /* Spinner for running processes */
     @keyframes spin {
       to { transform: rotate(360deg); }
@@ -143,17 +167,25 @@ function statusColor(status) {
   return map[status] || 'var(--text-dim)';
 }
 
-// Simple markdown renderer
+// Markdown renderer using marked.js (loaded via CDN)
 function renderMarkdown(text) {
   if (!text) return '';
-  return text
-    .replace(/^## (.+)$/gm, '<h2 style="color:var(--text-primary);font-size:1rem;margin:16px 0 8px;font-weight:600;">$1</h2>')
-    .replace(/^### (.+)$/gm, '<h3 style="color:var(--text-secondary);font-size:0.9rem;margin:12px 0 6px;font-weight:600;">$1</h3>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/^- (.+)$/gm, '<li style="margin:4px 0 4px 16px;color:var(--text-secondary);">$1</li>')
-    .replace(/^(\d+\. .+)$/gm, '<li style="margin:4px 0 4px 16px;color:var(--text-secondary);">$1</li>')
-    .replace(/\n\n/g, '<br/><br/>')
-    .replace(/\n/g, '<br/>');
+  if (typeof marked === 'undefined') {
+    // Fallback if CDN hasn't loaded yet
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>');
+  }
+  return marked.parse(text, { breaks: true, gfm: true });
+}
+
+// Markdown render component — applies md-body class for consistent styling
+function MarkdownBody({ content, style }) {
+  return (
+    <div
+      className="md-body"
+      style={style}
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(content || '') }}
+    />
+  );
 }
 
 // ─── API Layer ────────────────────────────────────────────────────────────────
@@ -392,10 +424,7 @@ function ReportView({ report, loading, onRunReport }) {
             background: 'var(--bg-card)', borderRadius: 12,
             padding: 20, border: '1px solid var(--border)',
           }}>
-            <div
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(s.content) }}
-              style={{ lineHeight: 1.6, fontSize: '0.9rem' }}
-            />
+            <MarkdownBody content={s.content} />
           </div>
         ))}
       </div>
@@ -404,6 +433,24 @@ function ReportView({ report, loading, onRunReport }) {
 }
 
 // ─── File Modal ───────────────────────────────────────────────────────────────
+
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']);
+
+function isImageFile(name) {
+  if (!name) return false;
+  const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
+  return IMAGE_EXTENSIONS.has(ext);
+}
+
+function downloadFile(name, content) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function FileModal({ file, onClose, addToast }) {
   const [editMode, setEditMode] = useState(false);
@@ -416,6 +463,9 @@ function FileModal({ file, onClose, addToast }) {
   }, [file?.path]);
 
   if (!file) return null;
+
+  const isImage = isImageFile(file.name);
+  const isUnsaved = editMode && editContent !== (file.content || '');
 
   const handleSave = async () => {
     setSaving(true);
@@ -432,22 +482,39 @@ function FileModal({ file, onClose, addToast }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}
       onClick={onClose}>
       <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 24,
-        maxWidth: 800, maxHeight: '85vh', width: '92%', display: 'flex',
+        maxWidth: 860, maxHeight: '88vh', width: '94%', display: 'flex',
         flexDirection: 'column', gap: 16 }}
         onClick={e => e.stopPropagation()}>
 
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ fontFamily: 'monospace', fontSize: '0.95rem', color: 'var(--text-secondary)',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>
-            {file.name}
-          </h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <h3 style={{ fontFamily: 'monospace', fontSize: '0.95rem', color: 'var(--text-secondary)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {file.name}
+            </h3>
+            {isUnsaved && (
+              <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: 10,
+                background: '#F59B2333', color: 'var(--status-review)', flexShrink: 0 }}>
+                Unsaved
+              </span>
+            )}
+          </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-            {file.editable && !editMode && !file.loading && (
+            {/* Download — only for text files with loaded content */}
+            {!isImage && !file.loading && file.content != null && (
+              <button
+                onClick={() => downloadFile(file.name, file.content)}
+                style={{ ...accentBtn, background: 'var(--bg-card-hover)', padding: '5px 12px', fontSize: '0.8rem' }}
+                title="Download file">
+                Download
+              </button>
+            )}
+            {file.editable && !editMode && !file.loading && !isImage && (
               <button onClick={() => { setEditContent(file.content || ''); setEditMode(true); }}
                 style={{ ...accentBtn, background: 'var(--bg-card-hover)', padding: '5px 12px', fontSize: '0.8rem' }}>
                 Edit
@@ -455,6 +522,9 @@ function FileModal({ file, onClose, addToast }) {
             )}
             {editMode && (
               <>
+                <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem', fontVariantNumeric: 'tabular-nums' }}>
+                  {editContent.length.toLocaleString()} chars
+                </span>
                 <button onClick={() => setEditMode(false)}
                   style={{ ...accentBtn, background: 'var(--text-dim)', padding: '5px 12px', fontSize: '0.8rem' }}>
                   Cancel
@@ -468,7 +538,7 @@ function FileModal({ file, onClose, addToast }) {
             )}
             <button onClick={onClose}
               style={{ background: 'none', border: 'none', color: 'var(--text-secondary)',
-                cursor: 'pointer', fontSize: '1.2rem' }}>✕</button>
+                cursor: 'pointer', fontSize: '1.2rem', lineHeight: 1 }}>✕</button>
           </div>
         </div>
 
@@ -476,15 +546,23 @@ function FileModal({ file, onClose, addToast }) {
         <div style={{ overflowY: 'auto', flex: 1, minHeight: 200 }}>
           {file.loading ? (
             <div className="shimmer" style={{ height: 200 }} />
+          ) : isImage ? (
+            <div style={{ textAlign: 'center' }}>
+              <img
+                src={`/api/workspace/file-raw?path=${encodeURIComponent(file.path)}`}
+                alt={file.name}
+                style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: 8, objectFit: 'contain' }}
+                onError={e => { e.target.style.display = 'none'; }}
+              />
+            </div>
           ) : editMode ? (
             <textarea value={editContent} onChange={e => setEditContent(e.target.value)}
-              style={{ width: '100%', minHeight: 400, background: 'var(--bg-base)',
+              style={{ width: '100%', minHeight: 420, background: 'var(--bg-base)',
                 color: 'var(--text-primary)', border: '1px solid var(--border)',
                 borderRadius: 8, padding: 16, fontFamily: 'monospace', fontSize: '0.85rem',
                 lineHeight: 1.6, resize: 'vertical', outline: 'none' }} />
           ) : (
-            <div dangerouslySetInnerHTML={{ __html: renderMarkdown(file.content || '') }}
-              style={{ lineHeight: 1.6, fontSize: '0.9rem', color: 'var(--text-secondary)' }} />
+            <MarkdownBody content={file.content || ''} />
           )}
         </div>
       </div>

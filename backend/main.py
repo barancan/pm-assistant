@@ -287,6 +287,15 @@ async def read_workspace_file(path: str):
     return {"path": path, "content": content}
 
 
+@app.get("/api/workspace/file-raw")
+async def read_workspace_file_raw(path: str):
+    """Serve a workspace file as raw bytes — used for image previews."""
+    resolved = _resolve_ws_path(path)
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(str(resolved))
+
+
 @app.put("/api/workspace/file")
 async def write_workspace_file(req: FileWriteRequest):
     resolved = _resolve_ws_path(req.path)
